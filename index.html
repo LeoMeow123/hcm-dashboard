@@ -949,7 +949,7 @@ function renderDetail(dateStr) {
           const infSess = c.inference.sessions_done;
           const recSess = c.sessions || 0;
           const pct = recVids > 0 ? (infVids / recVids * 100) : 0;
-          const done = infSess >= recSess && recSess > 0;
+          const done = infVids >= recVids && recVids > 0;
           return `
           <div style="margin-top:8px;padding:6px 8px;background:rgba(188,140,255,0.08);border-radius:4px;font-size:12px">
             <span style="color:var(--purple);font-weight:600">Inference:</span>
