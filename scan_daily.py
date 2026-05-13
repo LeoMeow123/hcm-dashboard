@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""HCM Daily Scanner — walks VAST and produces hcm_daily_status.json.
+
+Scans the HCM recording directory, groups sessions by date, computes
+per-camera metrics, and flags recording issues. Designed to run daily
+via cron with incremental updates.
+
+Usage:
+    python3 scan_daily.py              # incremental (only new dates)
+    python3 scan_daily.py --full       # full rescan
+    python3 scan_daily.py --dry-run    # print without writing JSON
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# --- Configuration ---
+
+DATA_ROOT = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")
+CAMERAS = ["cam_01", "cam_02", "cam_03", "cam_04"]
+OUTPUT_FILE = Path(__file__).parent / "hcm_daily_status.json"
+
+# Thresholds
+TINY_FILE_BYTES = 1_000_000  # 1MB — crash artifact
+EXPECTED_VIDEOS_PER_DAY = 24
+CRASH_SESSION_THRESHOLD = 2  # >1 session means at least one crash
+
+# Regex patterns
+SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-\d{2}-\d{2}-\d{2}$")
+VIDEO_RE = re.compile(r"^cam_\d{2}\.(\d{2})\.mp4$")
+
+
+def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
+    """Scan all sessions for a camera, grouped by date.
+
+    Args:
+        camera: Camera name (e.g. "cam_01")
+        after_date: Only scan sessions with date > this (YYYY-MM-DD).
+                    None = scan everything.
+
+    Returns:
+        {date_str: {sessions, videos, total_bytes, hours, empty_sessions,
+                    zero_byte, tiny_files, video_list}}
+    """
+    cam_dir = DATA_ROOT / camera
+    if not cam_dir.is_dir():
+        print(f"  WARNING: {cam_dir} not found, skipping", file=sys.stderr)
+        return {}
+
+    # Group sessions by date
+    dates: dict[str, list[Path]] = defaultdict(list)
+
+    try:
+        entries = sorted(os.listdir(cam_dir))
+    except OSError as e:
+        print(f"  ERROR listing {cam_dir}: {e}", file=sys.stderr)
+        return {}
+
+    for entry in entries:
+        m = SESSION_RE.match(entry)
+        if not m:
+            continue
+        date_str = m.group(1)
+        if after_date and date_str <= after_date:
+            continue
+        dates[date_str].append(cam_dir / entry)
+
+    # Process each date
+    results = {}
+    for date_str in sorted(dates):
+        sessions = dates[date_str]
+        total_videos = 0
+        total_bytes = 0
+        hours_covered = set()
+        empty_sessions = 0
+        zero_byte = 0
+        tiny_files = 0
+        video_details = []
+
+        for session_dir in sessions:
+            try:
+                files = os.listdir(session_dir)
+            except OSError:
+                empty_sessions += 1
+                continue
+
+            mp4s = [f for f in files if f.endswith(".mp4")]
+            if not mp4s:
+                empty_sessions += 1
+                continue
+
+            for mp4 in mp4s:
+                vm = VIDEO_RE.match(mp4)
+                if not vm:
+                    continue
+
+                video_idx = int(vm.group(1))
+                filepath = session_dir / mp4
+
+                try:
+                    size = os.path.getsize(filepath)
+                except OSError:
+                    size = 0
+
+                total_videos += 1
+                total_bytes += size
+                hours_covered.add(video_idx)
+
+                if size == 0:
+                    zero_byte += 1
+                elif size < TINY_FILE_BYTES:
+                    tiny_files += 1
+
+                video_details.append({
+                    "session": session_dir.name,
+                    "file": mp4,
+                    "index": video_idx,
+                    "bytes": size,
+                })
+
+        results[date_str] = {
+            "sessions": len(sessions),
+            "videos": total_videos,
+            "total_bytes": total_bytes,
+            "total_mb": round(total_bytes / 1_048_576, 1),
+            "hours_covered": sorted(hours_covered),
+            "hours_count": len(hours_covered),
+            "empty_sessions": empty_sessions,
+            "zero_byte": zero_byte,
+            "tiny_files": tiny_files,
+        }
+
+    return results
+
+
+def compute_flags(day: dict) -> list[str]:
+    """Compute issue flags for a single date+camera entry."""
+    flags = []
+    if day["videos"] == 0:
+        flags.append("no_videos")
+    if day["videos"] < EXPECTED_VIDEOS_PER_DAY:
+        flags.append("incomplete")
+    if day["sessions"] > CRASH_SESSION_THRESHOLD:
+        flags.append("crash_day")
+    if day["sessions"] > 50:
+        flags.append("crash_storm")
+    if day["empty_sessions"] > 0:
+        flags.append("empty_sessions")
+    if day["zero_byte"] > 0:
+        flags.append("zero_byte_files")
+    if day["tiny_files"] > 0:
+        flags.append("tiny_files")
+    if day["hours_count"] == EXPECTED_VIDEOS_PER_DAY and day["sessions"] == 1:
+        flags.append("healthy")
+    return flags
+
+
+def compute_day_summary(cam_data: dict[str, dict]) -> dict:
+    """Compute cross-camera summary for a date."""
+    cameras_present = [c for c in CAMERAS if c in cam_data]
+    cameras_missing = [c for c in CAMERAS if c not in cam_data]
+
+    total_videos = sum(cam_data[c]["videos"] for c in cameras_present)
+    total_bytes = sum(cam_data[c]["total_bytes"] for c in cameras_present)
+    total_sessions = sum(cam_data[c]["sessions"] for c in cameras_present)
+
+    # All cameras have full coverage?
+    all_healthy = all(
+        cam_data.get(c, {}).get("hours_count", 0) == EXPECTED_VIDEOS_PER_DAY
+        and cam_data.get(c, {}).get("sessions", 0) == 1
+        for c in CAMERAS
+    )
+
+    # Worst camera stats
+    max_sessions = max(
+        (cam_data[c]["sessions"] for c in cameras_present), default=0
+    )
+
+    return {
+        "cameras_present": len(cameras_present),
+        "cameras_missing": cameras_missing,
+        "total_videos": total_videos,
+        "total_mb": round(total_bytes / 1_048_576, 1),
+        "total_sessions": total_sessions,
+        "max_sessions_any_cam": max_sessions,
+        "status": "healthy" if all_healthy else "degraded" if total_videos > 0 else "missing",
+    }
+
+
+def load_existing(path: Path) -> dict:
+    """Load existing JSON output, or return empty structure."""
+    if path.exists():
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"WARNING: Could not load {path}: {e}", file=sys.stderr)
+    return {"scan_info": {}, "dates": {}}
+
+
+def find_latest_date(data: dict) -> str | None:
+    """Find the most recent date in existing data."""
+    dates = list(data.get("dates", {}).keys())
+    return max(dates) if dates else None
+
+
+def main():
+    parser = argparse.ArgumentParser(description="HCM Daily Scanner")
+    parser.add_argument("--full", action="store_true", help="Full rescan (ignore existing data)")
+    parser.add_argument("--dry-run", action="store_true", help="Print results without writing")
+    parser.add_argument("--output", type=Path, default=OUTPUT_FILE, help="Output JSON path")
+    parser.add_argument("--days", type=int, help="Only scan the last N days")
+    args = parser.parse_args()
+
+    # Load existing or start fresh
+    if args.full:
+        data = {"scan_info": {}, "dates": {}}
+        after_date = None
+        print("Full scan mode — scanning all dates")
+    else:
+        data = load_existing(args.output)
+        after_date = find_latest_date(data)
+        if after_date:
+            print(f"Incremental scan — scanning dates after {after_date}")
+        else:
+            print("No existing data — scanning all dates")
+
+    if args.days:
+        cutoff = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
+        if after_date is None or cutoff > after_date:
+            after_date = cutoff
+        print(f"Limited to last {args.days} days (after {after_date})")
+
+    # Scan each camera
+    all_cam_data: dict[str, dict[str, dict]] = {}
+    for camera in CAMERAS:
+        print(f"Scanning {camera}...")
+        cam_results = scan_camera(camera, after_date)
+        all_cam_data[camera] = cam_results
+        print(f"  Found {len(cam_results)} dates with data")
+
+    # Merge into output structure
+    all_dates = set()
+    for cam_results in all_cam_data.values():
+        all_dates.update(cam_results.keys())
+
+    new_dates = 0
+    for date_str in sorted(all_dates):
+        cam_entries = {}
+        for camera in CAMERAS:
+            if date_str in all_cam_data[camera]:
+                entry = all_cam_data[camera][date_str]
+                entry["flags"] = compute_flags(entry)
+                cam_entries[camera] = entry
+
+        summary = compute_day_summary(cam_entries)
+
+        data.setdefault("dates", {})[date_str] = {
+            "summary": summary,
+            "cameras": cam_entries,
+        }
+        new_dates += 1
+
+    # Update scan info
+    all_date_keys = sorted(data.get("dates", {}).keys())
+    data["scan_info"] = {
+        "last_scan": datetime.now().isoformat(),
+        "scan_mode": "full" if args.full else "incremental",
+        "new_dates_scanned": new_dates,
+        "total_dates": len(all_date_keys),
+        "date_range": {
+            "first": all_date_keys[0] if all_date_keys else None,
+            "last": all_date_keys[-1] if all_date_keys else None,
+        },
+        "data_root": str(DATA_ROOT),
+    }
+
+    # Compute overall stats
+    total_healthy = sum(
+        1 for d in data["dates"].values()
+        if d["summary"]["status"] == "healthy"
+    )
+    total_degraded = sum(
+        1 for d in data["dates"].values()
+        if d["summary"]["status"] == "degraded"
+    )
+    total_missing = sum(
+        1 for d in data["dates"].values()
+        if d["summary"]["status"] == "missing"
+    )
+    data["scan_info"]["overall"] = {
+        "healthy_days": total_healthy,
+        "degraded_days": total_degraded,
+        "missing_days": total_missing,
+    }
+
+    # Print summary
+    print(f"\n--- Scan Complete ---")
+    print(f"Total dates: {len(all_date_keys)}")
+    print(f"New/updated: {new_dates}")
+    print(f"Healthy: {total_healthy} | Degraded: {total_degraded} | Missing: {total_missing}")
+
+    if args.dry_run:
+        # Print a sample
+        print(f"\nSample (last 3 dates):")
+        for date_str in all_date_keys[-3:]:
+            day = data["dates"][date_str]
+            s = day["summary"]
+            print(f"  {date_str}: {s['status']} — {s['total_videos']} videos, "
+                  f"{s['total_sessions']} sessions, {s['cameras_present']}/4 cameras")
+            for cam in CAMERAS:
+                if cam in day["cameras"]:
+                    c = day["cameras"][cam]
+                    flags = ", ".join(c["flags"]) if c["flags"] else "none"
+                    print(f"    {cam}: {c['videos']} videos, {c['sessions']} sessions, "
+                          f"{c['total_mb']}MB, flags=[{flags}]")
+    else:
+        with open(args.output, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"\nWritten to {args.output}")
+        print(f"File size: {os.path.getsize(args.output) / 1_048_576:.1f} MB")
+
+
+if __name__ == "__main__":
+    main()
