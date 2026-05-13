@@ -943,13 +943,21 @@ function renderDetail(dateStr) {
         </div>
         ${timelineHtml}
         ${labelsHtml}
-        ${c.inference ? `
-        <div style="margin-top:8px;padding:6px 8px;background:rgba(188,140,255,0.08);border-radius:4px;font-size:12px">
-          <span style="color:var(--purple);font-weight:600">Inference:</span>
-          ${c.inference.videos_done} / ${c.sessions || '?'} sessions
-          ${c.inference.videos_done >= (c.sessions || 0) ? '<span style="color:var(--green)"> &#10003; Done</span>' : '<span style="color:var(--text-dim)"> In progress</span>'}
-          <div class="progress-bar"><div class="progress-fill" style="width:${(c.inference.sessions_done / Math.max(c.sessions || 1, 1) * 100)}%;background:var(--purple)"></div></div>
-        </div>` : ''}
+        ${c.inference ? (() => {
+          const infVids = c.inference.videos_done;
+          const recVids = c.videos || 0;
+          const infSess = c.inference.sessions_done;
+          const recSess = c.sessions || 0;
+          const pct = recVids > 0 ? (infVids / recVids * 100) : 0;
+          const done = infSess >= recSess && recSess > 0;
+          return `
+          <div style="margin-top:8px;padding:6px 8px;background:rgba(188,140,255,0.08);border-radius:4px;font-size:12px">
+            <span style="color:var(--purple);font-weight:600">Inference:</span>
+            ${infVids} / ${recVids} videos (${infSess} / ${recSess} sessions)
+            ${done ? '<span style="color:var(--green)"> &#10003; Done</span>' : `<span style="color:var(--text-dim)"> ${pct.toFixed(0)}%</span>`}
+            <div class="progress-bar"><div class="progress-fill" style="width:${Math.min(pct, 100)}%;background:var(--purple)"></div></div>
+          </div>`;
+        })() : ''}
         ${flagsHtml}
       </div>`;
   }
