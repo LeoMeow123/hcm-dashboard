@@ -23,6 +23,7 @@ from pathlib import Path
 # --- Configuration ---
 
 DATA_ROOT = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")
+INFERENCE_ROOT = Path("/home/exx/vast/leo/datasets/inference-Kuo-Fen-HCM")
 CAMERAS = ["cam_01", "cam_02", "cam_03", "cam_04"]
 OUTPUT_FILE = Path(__file__).parent / "hcm_daily_status.json"
 
@@ -30,6 +31,7 @@ OUTPUT_FILE = Path(__file__).parent / "hcm_daily_status.json"
 TINY_FILE_BYTES = 1_000_000  # 1MB — crash artifact
 EXPECTED_VIDEOS_PER_DAY = 24
 CRASH_SESSION_THRESHOLD = 2  # >1 session means at least one crash
+PREDICTION_RE = re.compile(r"^cam_\d{2}\.\d{2}\.predictions\.slp$")
 
 # Regex patterns
 SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-\d{2}-\d{2}-\d{2}$")
@@ -139,6 +141,85 @@ def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
     return results
 
 
+def scan_inference(camera: str) -> dict[str, dict]:
+    """Scan inference output for a camera, grouped by date.
+
+    Returns:
+        {date_str: {sessions_done: int, videos_done: int, session_list: [...]}}
+    """
+    inf_dir = INFERENCE_ROOT / camera
+    if not inf_dir.is_dir():
+        return {}
+
+    try:
+        entries = sorted(os.listdir(inf_dir))
+    except OSError:
+        return {}
+
+    dates: dict[str, list[str]] = defaultdict(list)
+    for entry in entries:
+        m = SESSION_RE.match(entry)
+        if not m:
+            continue
+        dates[m.group(1)].append(entry)
+
+    results = {}
+    for date_str, sessions in dates.items():
+        total_slp = 0
+        for session in sessions:
+            session_dir = inf_dir / session
+            try:
+                files = os.listdir(session_dir)
+            except OSError:
+                continue
+            total_slp += sum(1 for f in files if PREDICTION_RE.match(f))
+
+        results[date_str] = {
+            "sessions_done": len(sessions),
+            "videos_done": total_slp,
+        }
+
+    return results
+
+
+def check_transfer_freshness() -> dict:
+    """Check the latest session date per camera to detect transfer gaps."""
+    result = {}
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    for camera in CAMERAS:
+        cam_dir = DATA_ROOT / camera
+        try:
+            entries = sorted(os.listdir(cam_dir))
+        except OSError:
+            result[camera] = {"latest_session": None, "latest_date": None, "days_behind": None}
+            continue
+
+        latest = None
+        for entry in reversed(entries):
+            m = SESSION_RE.match(entry)
+            if m:
+                latest = entry
+                break
+
+        if latest:
+            latest_date = SESSION_RE.match(latest).group(1)
+            try:
+                delta = (datetime.strptime(today, "%Y-%m-%d") -
+                         datetime.strptime(latest_date, "%Y-%m-%d")).days
+            except ValueError:
+                delta = None
+            result[camera] = {
+                "latest_session": latest,
+                "latest_date": latest_date,
+                "days_behind": delta,
+            }
+        else:
+            result[camera] = {"latest_session": None, "latest_date": None, "days_behind": None}
+
+    return result
+
+
 def compute_flags(day: dict) -> list[str]:
     """Compute issue flags for a single date+camera entry."""
     flags = []
@@ -237,17 +318,35 @@ def main():
             after_date = cutoff
         print(f"Limited to last {args.days} days (after {after_date})")
 
-    # Scan each camera
+    # Scan each camera (recording + inference)
     all_cam_data: dict[str, dict[str, dict]] = {}
+    all_inf_data: dict[str, dict[str, dict]] = {}
     for camera in CAMERAS:
-        print(f"Scanning {camera}...")
+        print(f"Scanning {camera} recordings...")
         cam_results = scan_camera(camera, after_date)
         all_cam_data[camera] = cam_results
         print(f"  Found {len(cam_results)} dates with data")
 
+        print(f"Scanning {camera} inference...")
+        inf_results = scan_inference(camera)
+        all_inf_data[camera] = inf_results
+        print(f"  Found {len(inf_results)} dates with inference")
+
+    # Check transfer freshness
+    print("Checking transfer freshness...")
+    transfer = check_transfer_freshness()
+    for cam, info in transfer.items():
+        behind = info["days_behind"]
+        status = "OK" if behind is not None and behind <= 1 else "STALE" if behind else "UNKNOWN"
+        print(f"  {cam}: latest {info['latest_date']} ({behind}d behind) — {status}")
+
     # Merge into output structure
     all_dates = set()
     for cam_results in all_cam_data.values():
+        all_dates.update(cam_results.keys())
+
+    # Collect all dates from both recording and inference
+    for cam_results in all_inf_data.values():
         all_dates.update(cam_results.keys())
 
     new_dates = 0
@@ -259,7 +358,39 @@ def main():
                 entry["flags"] = compute_flags(entry)
                 cam_entries[camera] = entry
 
+            # Merge inference data
+            if date_str in all_inf_data.get(camera, {}):
+                inf = all_inf_data[camera][date_str]
+                if camera in cam_entries:
+                    cam_entries[camera]["inference"] = inf
+                else:
+                    cam_entries.setdefault(camera, {})
+                    cam_entries[camera]["inference"] = inf
+
         summary = compute_day_summary(cam_entries)
+
+        # Inference summary for this date
+        inf_sessions = sum(
+            all_inf_data.get(c, {}).get(date_str, {}).get("sessions_done", 0)
+            for c in CAMERAS
+        )
+        inf_videos = sum(
+            all_inf_data.get(c, {}).get(date_str, {}).get("videos_done", 0)
+            for c in CAMERAS
+        )
+        rec_sessions = sum(
+            cam_entries.get(c, {}).get("sessions", 0) for c in CAMERAS
+        )
+        rec_videos = sum(
+            cam_entries.get(c, {}).get("videos", 0) for c in CAMERAS
+        )
+        summary["inference"] = {
+            "sessions_done": inf_sessions,
+            "videos_done": inf_videos,
+            "sessions_total": rec_sessions,
+            "videos_total": rec_videos,
+            "complete": inf_sessions >= rec_sessions > 0 if rec_sessions else False,
+        }
 
         data.setdefault("dates", {})[date_str] = {
             "summary": summary,
@@ -294,17 +425,40 @@ def main():
         1 for d in data["dates"].values()
         if d["summary"]["status"] == "missing"
     )
+    # Inference totals
+    inf_complete_dates = sum(
+        1 for d in data["dates"].values()
+        if d["summary"].get("inference", {}).get("complete", False)
+    )
+    total_inf_videos = sum(
+        d["summary"].get("inference", {}).get("videos_done", 0)
+        for d in data["dates"].values()
+    )
+    total_rec_videos = sum(
+        d["summary"].get("inference", {}).get("videos_total", 0)
+        for d in data["dates"].values()
+    )
+
     data["scan_info"]["overall"] = {
         "healthy_days": total_healthy,
         "degraded_days": total_degraded,
         "missing_days": total_missing,
+        "inference_complete_dates": inf_complete_dates,
+        "inference_videos_done": total_inf_videos,
+        "inference_videos_total": total_rec_videos,
     }
+    data["scan_info"]["transfer"] = transfer
 
     # Print summary
     print(f"\n--- Scan Complete ---")
     print(f"Total dates: {len(all_date_keys)}")
     print(f"New/updated: {new_dates}")
     print(f"Healthy: {total_healthy} | Degraded: {total_degraded} | Missing: {total_missing}")
+    print(f"Inference: {inf_complete_dates} dates complete, "
+          f"{total_inf_videos}/{total_rec_videos} videos "
+          f"({total_inf_videos/max(total_rec_videos,1)*100:.1f}%)")
+    for cam, info in transfer.items():
+        print(f"Transfer {cam}: {info['latest_date']} ({info['days_behind']}d behind)")
 
     if args.dry_run:
         # Print a sample

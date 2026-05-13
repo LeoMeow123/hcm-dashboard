@@ -97,6 +97,63 @@ header h1 span { color: var(--text-dim); font-weight: 400; }
 .value.yellow { color: var(--yellow); }
 .value.red { color: var(--red); }
 .value.blue { color: var(--blue); }
+.value.purple { color: var(--purple); }
+
+/* Transfer alert banner */
+.transfer-alert {
+  background: var(--red-bg);
+  border: 1px solid var(--red);
+  border-radius: 8px;
+  padding: 12px 20px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.transfer-alert.ok {
+  background: var(--green-bg);
+  border-color: var(--green);
+}
+
+.transfer-alert.warn {
+  background: var(--yellow-bg);
+  border-color: var(--yellow);
+}
+
+.transfer-alert .alert-icon { font-size: 20px; }
+
+/* Progress bar */
+.progress-bar {
+  height: 6px;
+  background: #1a1e24;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+/* Inference indicator dot on calendar */
+.day-cell .inf-dot {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--purple);
+}
+
+.day-cell .inf-dot.partial {
+  background: var(--purple);
+  opacity: 0.5;
+}
 
 /* Calendar heatmap */
 .calendar-section {
@@ -452,6 +509,8 @@ canvas {
     </div>
   </header>
 
+  <div id="transfer-alert"></div>
+
   <div class="summary-bar" id="summary-bar"></div>
 
   <div class="calendar-section">
@@ -464,6 +523,7 @@ canvas {
       <div class="legend-item"><div class="legend-swatch" style="background:#d46a18"></div> Poor (&lt;6h)</div>
       <div class="legend-item"><div class="legend-swatch" style="background:var(--red)"></div> Crash storm (50+ sessions)</div>
       <div class="legend-item"><div class="legend-swatch" style="background:var(--border)"></div> No data</div>
+      <div class="legend-item"><div class="legend-swatch" style="background:var(--purple);width:8px;height:8px;border-radius:50%"></div> Inference done</div>
     </div>
   </div>
 
@@ -487,6 +547,7 @@ canvas {
       <div class="trend-tab" onclick="setTrend('sessions')">Sessions/Day</div>
       <div class="trend-tab" onclick="setTrend('videos')">Videos/Day</div>
       <div class="trend-tab" onclick="setTrend('tiny')">Tiny Files</div>
+      <div class="trend-tab" onclick="setTrend('inference')">Inference Progress</div>
     </div>
     <div class="chart-container">
       <canvas id="trend-canvas"></canvas>
@@ -515,6 +576,7 @@ async function loadData() {
 }
 
 function render() {
+  renderTransferAlert();
   renderHeader();
   renderSummary();
   renderCalendar();
@@ -528,6 +590,44 @@ function renderHeader() {
     `Last scan: ${scanDate.toLocaleDateString()} ${scanDate.toLocaleTimeString()}`;
   document.getElementById('scan-range').textContent =
     `${info.date_range.first} to ${info.date_range.last} (${info.total_dates} days)`;
+}
+
+function renderTransferAlert() {
+  const transfer = DATA.scan_info.transfer;
+  if (!transfer) {
+    document.getElementById('transfer-alert').innerHTML = '';
+    return;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  let maxBehind = 0;
+  let details = [];
+  for (const [cam, info] of Object.entries(transfer)) {
+    const behind = info.days_behind ?? 999;
+    maxBehind = Math.max(maxBehind, behind);
+    details.push(`${cam}: ${info.latest_date} (${behind}d ago)`);
+  }
+
+  let cls, icon, msg;
+  if (maxBehind <= 1) {
+    cls = 'ok'; icon = '&#10003;';
+    msg = `Transfer OK — all cameras have data from ${Object.values(transfer)[0]?.latest_date || 'unknown'}`;
+  } else if (maxBehind <= 3) {
+    cls = 'warn'; icon = '&#9888;';
+    msg = `Transfer delayed — latest data is ${maxBehind} days old. Check robocopy.`;
+  } else {
+    cls = ''; icon = '&#10060;';
+    msg = `Transfer stale — no new data for ${maxBehind} days! Recording or transfer may be down.`;
+  }
+
+  document.getElementById('transfer-alert').innerHTML = `
+    <div class="transfer-alert ${cls}">
+      <span class="alert-icon">${icon}</span>
+      <div>
+        <strong>${msg}</strong>
+        <div style="font-size:12px;color:var(--text-dim);margin-top:2px">${details.join(' | ')}</div>
+      </div>
+    </div>`;
 }
 
 function renderSummary() {
@@ -552,6 +652,11 @@ function renderSummary() {
   const coverage = ((totalHours / expectedHours) * 100).toFixed(1);
   const healthyPct = ((o.healthy_days / info.total_dates) * 100).toFixed(0);
 
+  const infDone = o.inference_videos_done || 0;
+  const infTotal = o.inference_videos_total || 1;
+  const infPct = (infDone / infTotal * 100).toFixed(1);
+  const infDates = o.inference_complete_dates || 0;
+
   document.getElementById('summary-bar').innerHTML = `
     <div class="summary-card">
       <div class="label">Recording Days</div>
@@ -572,6 +677,17 @@ function renderSummary() {
       <div class="label">Degraded Days</div>
       <div class="value yellow">${o.degraded_days}</div>
       <div class="sub">${(o.degraded_days / info.total_dates * 100).toFixed(0)}% of all days</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Inference Progress</div>
+      <div class="value purple">${infPct}%</div>
+      <div class="sub">${infDone.toLocaleString()} / ${infTotal.toLocaleString()} videos</div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${infPct}%;background:var(--purple)"></div></div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Inference Complete</div>
+      <div class="value purple">${infDates}</div>
+      <div class="sub">${(infDates / info.total_dates * 100).toFixed(0)}% of dates fully done</div>
     </div>
     <div class="summary-card">
       <div class="label">Crash Artifacts</div>
@@ -663,12 +779,20 @@ function renderCalendar() {
       else if (avgHours >= 6) cls = 'degraded-medium';
       else cls = 'degraded-heavy';
 
-      const tip = `${dateStr}: ${summary.status} — ${summary.total_videos} videos, ${summary.total_sessions} sessions, avg ${avgHours.toFixed(0)}h coverage`;
+      const inf = summary.inference || {};
+      const infComplete = inf.complete;
+      const infPartial = inf.videos_done > 0 && !infComplete;
+      const infTip = inf.videos_done ? ` | Inference: ${inf.videos_done}/${inf.videos_total} videos` : '';
+
+      const tip = `${dateStr}: ${summary.status} — ${summary.total_videos} videos, ${summary.total_sessions} sessions, avg ${avgHours.toFixed(0)}h coverage${infTip}`;
+
+      const infDot = infComplete ? '<div class="inf-dot"></div>' :
+                     infPartial ? '<div class="inf-dot partial"></div>' : '';
 
       html += `<div class="day-cell ${cls}" data-date="${dateStr}"
         onmouseenter="showTooltip(event,\`${tip}\`)"
         onmouseleave="hideTooltip()"
-        onclick="selectDate('${dateStr}')"></div>`;
+        onclick="selectDate('${dateStr}')">${infDot}</div>`;
     }
 
     html += `</div></div>`;
@@ -732,12 +856,18 @@ function renderDetail(dateStr) {
   document.getElementById('detail-badge').innerHTML =
     `<span class="status-badge ${summary.status}">${summary.status}</span>`;
 
+  const inf = summary.inference || {};
+  const infLine = inf.videos_done != null
+    ? `<br>Inference: ${inf.videos_done}/${inf.videos_total} videos ${inf.complete ? '<span class="status-badge healthy">Complete</span>' : `<span style="color:var(--purple)">(${(inf.videos_done/Math.max(inf.videos_total,1)*100).toFixed(0)}%)</span>`}`
+    : '';
+
   document.getElementById('detail-summary').innerHTML = `
     <p style="color:var(--text-dim);margin-bottom:12px">
       ${summary.total_videos} videos across ${summary.total_sessions} sessions,
       ${summary.cameras_present}/4 cameras
       ${summary.cameras_missing.length ? ` (missing: ${summary.cameras_missing.join(', ')})` : ''}
       — ${summary.total_mb.toLocaleString()} MB total
+      ${infLine}
     </p>
   `;
 
@@ -813,6 +943,13 @@ function renderDetail(dateStr) {
         </div>
         ${timelineHtml}
         ${labelsHtml}
+        ${c.inference ? `
+        <div style="margin-top:8px;padding:6px 8px;background:rgba(188,140,255,0.08);border-radius:4px;font-size:12px">
+          <span style="color:var(--purple);font-weight:600">Inference:</span>
+          ${c.inference.videos_done} / ${c.sessions || '?'} sessions
+          ${c.inference.videos_done >= (c.sessions || 0) ? '<span style="color:var(--green)"> &#10003; Done</span>' : '<span style="color:var(--text-dim)"> In progress</span>'}
+          <div class="progress-bar"><div class="progress-fill" style="width:${(c.inference.sessions_done / Math.max(c.sessions || 1, 1) * 100)}%;background:var(--purple)"></div></div>
+        </div>` : ''}
         ${flagsHtml}
       </div>`;
   }
@@ -860,7 +997,10 @@ function renderTrend() {
       case 'videos':
         return day.summary.total_videos;
       case 'tiny':
-        return cams.reduce((s,c) => s + c.tiny_files, 0);
+        return cams.reduce((s,c) => s + (c.tiny_files || 0), 0);
+      case 'inference':
+        const dinf = day.summary.inference || {};
+        return dinf.videos_total > 0 ? (dinf.videos_done / dinf.videos_total * 100) : 0;
       default:
         return 0;
     }
@@ -871,7 +1011,8 @@ function renderTrend() {
     coverage: '% Coverage',
     sessions: 'Sessions',
     videos: 'Videos',
-    tiny: 'Tiny Files'
+    tiny: 'Tiny Files',
+    inference: '% Inference Done'
   }[currentTrend];
 
   // Grid lines
@@ -905,7 +1046,8 @@ function renderTrend() {
   }
 
   // Draw bars or line
-  if (currentTrend === 'coverage') {
+  if (currentTrend === 'coverage' || currentTrend === 'inference') {
+    const lineColor = currentTrend === 'inference' ? '#bc8cff' : '#3fb950';
     // Line chart with fill
     ctx.beginPath();
     const points = values.map((v, i) => ({
@@ -917,7 +1059,7 @@ function renderTrend() {
     for (let i = 1; i < points.length; i++) {
       ctx.lineTo(points[i].x, points[i].y);
     }
-    ctx.strokeStyle = '#3fb950';
+    ctx.strokeStyle = lineColor;
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -925,13 +1067,14 @@ function renderTrend() {
     ctx.lineTo(points[points.length-1].x, pad.top + plotH);
     ctx.lineTo(points[0].x, pad.top + plotH);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(63, 185, 80, 0.1)';
+    const rgb = currentTrend === 'inference' ? '188, 140, 255' : '63, 185, 80';
+    ctx.fillStyle = `rgba(${rgb}, 0.1)`;
     ctx.fill();
 
     // Reference line at 100%
     if (maxVal >= 100) {
       const y100 = pad.top + plotH - (100 / maxVal) * plotH;
-      ctx.strokeStyle = 'rgba(63, 185, 80, 0.3)';
+      ctx.strokeStyle = `rgba(${rgb}, 0.3)`;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
       ctx.moveTo(pad.left, y100);
