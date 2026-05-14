@@ -13,10 +13,10 @@ Detailed documentation of the HCM recording data on VAST.
 
 ```
 2024-09-24-LeeAPP/
-├── cam_01/          # Mouse cage 1
-├── cam_02/          # Mouse cage 2
-├── cam_03/          # Mouse cage 3
-├── cam_04/          # Mouse cage 4
+├── cam_01/          # Calibration board (as of May 2026)
+├── cam_02/          # Active mouse cage
+├── cam_03/          # Calibration board (as of May 2026)
+├── cam_04/          # Active mouse cage
 └── video_metadata.csv   # 5.3M-line ffprobe dump (pre-existing)
 ```
 
@@ -28,10 +28,10 @@ The timestamp is when the recording software started (or restarted).
 
 ```
 cam_01/2026-05-10-00-21-05/
-├── cam_01.00.mp4    # Hour 0 (33MB, ~1hr at 50fps)
-├── cam_01.01.mp4    # Hour 1
+├── cam_01.00.mp4    # Chunk 0 (~50-130MB, ~1hr at 50fps)
+├── cam_01.01.mp4    # Chunk 1
 ├── ...
-├── cam_01.23.mp4    # Hour 23 (sometimes shorter, ~21MB)
+├── cam_01.23.mp4    # Chunk 23 (full day = 24 chunks)
 └── (optional) YYYY-MM-DDTHH_MM_SS.csv   # Frame timestamps
 ```
 
@@ -39,14 +39,33 @@ cam_01/2026-05-10-00-21-05/
 
 - `cam_XX.NN.mp4` where NN = sequential chunk index (00-23 for full day)
 - Each chunk is ~1 hour of recording
-- ~33MB per chunk (H.264, 1280x1024, 50fps)
-- Last chunk of the day is often shorter (~21MB)
+- Size varies by activity: 46-130MB per chunk (H.264, 1280x1024, 50fps)
+- **Video index is relative to session start, not clock hour**
+  - Session starting at 08:11 → `cam_01.00.mp4` covers ~08:11-09:11, not 00:00-01:00
+  - This means crash restarts create duplicate index 00 files covering different clock hours
 
 ### Frame Timestamp CSV
 
 - Present in some sessions, not all
 - Contains per-frame timestamps with sub-millisecond precision
 - Format: `frame_number,ISO_timestamp`
+
+## Data Loss Summary
+
+| Metric | Value |
+|--------|-------|
+| Expected camera-hours | 47,520 (495 days x 24h x 4 cams) |
+| Actual camera-hours covered | 21,181 (44.6%) |
+| **Missing camera-hours** | **26,339 (55.4%)** |
+| Total videos on disk | 71,793 |
+| Usable videos (>1MB) | 46,399 |
+| Crash artifacts (<1MB) | 25,394 (35.4% of all videos) |
+| Total sessions | 47,228 (expected 1,980) |
+| Excess sessions from crashes | 45,248 |
+
+### Why more videos than expected
+
+71,793 videos on disk > 47,520 expected because each crash restart creates a new session starting at index 00. The recording crashes, restarts, writes `cam_01.00.mp4` (a tiny crash artifact), crashes again — never reaching indices 01-23. This produces many duplicate index-0 files covering hour 0 while later hours go unrecorded.
 
 ## Session Count Per Camera
 
@@ -112,6 +131,36 @@ A healthy day has **1 session** with **24 videos**.
 - Feb-Apr 2026: mostly absent (Jan 16 → Apr 6 gap)
 - Various single-day gaps throughout
 
+## Inference Data
+
+Inference results (SLEAP pose predictions):
+```
+/home/exx/vast/leo/datasets/inference-Kuo-Fen-HCM/
+├── cam_01/   # ~7,520 session folders with .slp files
+├── cam_02/   # ~7,585 sessions
+├── cam_03/   # ~7,570 sessions
+└── cam_04/   # ~7,521 sessions
+```
+
+Each session folder contains `cam_XX.NN.predictions.slp` files.
+
+### Inference Progress
+
+| Metric | Value |
+|--------|-------|
+| Dates fully complete | 289 / 495 (58%) |
+| Videos processed | 45,374 / 71,793 (63.2%) |
+| Running on | exx + 2 helper workstations |
+
+Inference progress tracked in JSONL logs at:
+```
+/home/exx/vast/leo/2026-01-28-HCM-APP/scratch/2026-02-26-inference-benchmark/inference_log/
+├── cam_01_progress.jsonl
+├── cam_02_progress.jsonl
+├── cam_03_progress.jsonl
+└── cam_04_progress.jsonl
+```
+
 ## Existing Metadata
 
 ### video_metadata.csv (5.3M lines)
@@ -127,32 +176,6 @@ format_tags_json, video_tags_json, ffprobe_error, raw_json
 
 Note: paths in this CSV use `/root/vast/...` (generated from a different mount point).
 
-### Other Pre-existing Files
-- `duration_by_date.csv` / `.png` — duration analysis
-- `duration_iqr_by_date.csv` / `.png` — IQR analysis
-- `_video_list.txt` — file listing
-- `_ffprobe_run.log` — ffprobe execution log
-
-## Inference Data
-
-Inference results live in a separate directory:
-```
-/home/exx/vast/leo/datasets/inference-Kuo-Fen-HCM/
-├── cam_01/   # .slp prediction files
-├── cam_02/
-├── cam_03/
-└── cam_04/
-```
-
-Inference progress is tracked in JSONL logs at:
-```
-/home/exx/vast/leo/2026-01-28-HCM-APP/scratch/2026-02-26-inference-benchmark/inference_log/
-├── cam_01_progress.jsonl
-├── cam_02_progress.jsonl
-├── cam_03_progress.jsonl
-└── cam_04_progress.jsonl
-```
-
 ## Key Metrics for Daily Monitor
 
 For each date, per camera:
@@ -161,9 +184,9 @@ For each date, per camera:
 |--------|---------------|---------------|
 | Sessions | Count of session folders for that date | 1 |
 | Videos | Total .mp4 files across all sessions | 24 |
-| Total size | Sum of file sizes | ~780MB |
-| Hours covered | Count of unique video indices | 24 |
+| Total size | Sum of file sizes | ~780MB-2.5GB |
+| Hours covered | Wall-clock hours with video (session start + index) | 24 |
 | Empty sessions | Sessions with 0 .mp4 files | 0 |
-| Zero-byte files | .mp4 files with 0 bytes | 0 |
-| Tiny files | .mp4 files < 1MB | 0 |
-| Camera sync | All 4 cameras have same date | Yes |
+| Tiny files | .mp4 files < 1MB (crash artifacts) | 0 |
+| Inference done | .slp files exist for all videos | Yes |
+| Transfer fresh | Latest session date = today or yesterday | Yes |

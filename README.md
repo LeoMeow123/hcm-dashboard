@@ -1,17 +1,63 @@
-# HCM Monitor
+# HCM Dashboard
 
-Daily health monitoring for the Home Cage Monitoring (HCM) recording pipeline. Scans VAST for recording issues, tracks inference progress, and reports via web dashboard and Slack.
+**https://leomeow123.github.io/hcm-dashboard/**
+
+Daily health monitoring for the Home Cage Monitoring (HCM) recording pipeline. Scans VAST for recording issues, tracks SLEAP inference progress, monitors data transfer, and reports via web dashboard.
 
 ## Problem
 
-The HCM recording computer (robocopy → VAST) is unstable. Common issues:
+The HCM recording computer (robocopy to VAST) is unstable. Common issues:
 - Recording crashes mid-day and restarts, producing fragmented sessions
 - Days with 50-200+ restart sessions instead of 1 clean 24hr session
 - Missing days with no recordings at all
 - Empty session folders (0 videos)
-- Short videos or 0-byte files from interrupted writes
+- Tiny files (<1MB) from crash artifacts
 
-Nobody notices these problems until weeks later when analysis fails. This tool catches them daily.
+Nobody notices these problems until weeks later when analysis fails. This dashboard catches them daily.
+
+## Key Numbers
+
+| Metric | Value |
+|--------|-------|
+| Recording period | 2024-09-24 to present (495 days) |
+| Hour coverage | **44.6%** (21,181 / 47,520 camera-hours) |
+| Healthy days | 58 (12%) |
+| Degraded days | 436 (88%) |
+| Crash artifacts | 25,394 tiny files (35% of all videos) |
+| Inference progress | 63.2% (45,374 / 71,793 videos) |
+
+## Dashboard Features
+
+### Recording Calendar
+Color-coded heatmap showing every recording day:
+- **Green**: Healthy (24hr, all 4 cameras)
+- **Yellow/Orange**: Partial or poor coverage
+- **Red**: Crash storm (50+ sessions)
+- **Gray**: No data
+- **Purple dot**: Inference complete for that date
+
+Click any date to see the detail view.
+
+### Transfer Alert
+Banner at the top showing whether new data is being transferred from the recording PC to VAST. Green = OK, yellow = delayed, red = stale (recording or transfer may be down).
+
+### Per-Camera Detail
+Click a date to see per-camera breakdown:
+- Video count, session count, total size
+- Tiny files, empty sessions, hours covered
+- 24-hour timeline showing which hours were recorded
+- Inference progress per camera with progress bar
+- Issue flags (crash_day, crash_storm, tiny_files, incomplete, etc.)
+
+### Visual Timeline with Thumbnails
+4-camera x 24-hour grid with:
+- **Thumbnail screenshots** extracted from each video
+- **Day/night cycle**: warm background (9:30am-9:30pm lights off) and dark background (9:30pm-9:30am lights on)
+- **Click to enlarge**: lightbox with left/right arrow navigation
+- Missing hours shown with dashed borders
+
+### Trend Charts
+Five views: Hour Coverage, Sessions/Day, Videos/Day, Tiny Files, Inference Progress.
 
 ## Data Layout
 
@@ -23,40 +69,25 @@ vast/lee/2024-09-24-LeeAPP/
 ├── cam_04/
 │
 └── cam_XX/YYYY-MM-DD-HH-MM-SS/    # session folder (timestamp = start time)
-    ├── cam_XX.00.mp4               # 1hr video chunks (~33MB each)
+    ├── cam_XX.00.mp4               # 1hr video chunks
     ├── cam_XX.01.mp4
     ├── ...
-    ├── cam_XX.23.mp4               # full day = 24 videos
-    └── YYYY-MM-DDTHH_MM_SS.csv    # frame timestamps
+    └── cam_XX.23.mp4               # full day = 24 videos
 ```
 
 ### What a healthy day looks like
 
 - 1 session per camera starting at ~00:01
 - 24 videos per session (cam_XX.00.mp4 through cam_XX.23.mp4)
-- Each video ~33MB, ~1hr of recording at 50fps 1280x1024
+- Each video ~50-130MB, ~1hr of recording at 50fps 1280x1024
 - All 4 cameras in sync
 
 ### What a bad day looks like
 
 - Multiple sessions (recording crashed and restarted)
 - <24 total videos across all sessions (missing hours)
-- Empty sessions (0 videos)
-- 0-byte or tiny files (write interrupted)
+- Tiny files <1MB (crash artifacts — recording started then died)
 - Missing entirely from one or more cameras
-
-## Recording Stats
-
-| Metric | Value |
-|--------|-------|
-| Start date | 2024-09-24 |
-| Latest date | 2026-05-12 (ongoing) |
-| Total unique dates | 494 |
-| Cameras | 4 (cam_01 through cam_04) |
-| Sessions per camera | ~11,800 |
-| Video format | H.264, 1280x1024, 50fps, 1hr chunks |
-| Expected per day | 24 videos x 4 cameras = 96 videos |
-| Total videos | ~63,900 per camera |
 
 ## Components
 
@@ -64,48 +95,78 @@ vast/lee/2024-09-24-LeeAPP/
 
 Walks VAST, groups sessions by date, produces `hcm_daily_status.json`:
 
-- Per date, per camera: video count, total size, session count, hours covered
-- Flags: missing days, short days, crash days (>2 sessions), empty sessions, 0-byte files
-- Incremental: only scans dates newer than last run
-- Runs via cron daily
+```bash
+python3 scan_daily.py              # incremental (only new dates)
+python3 scan_daily.py --full       # full rescan
+python3 scan_daily.py --dry-run    # print without writing
+python3 scan_daily.py --days 30    # only last 30 days
+```
 
-### 2. Web Dashboard (`index.html`)
+Three scanning layers:
+- **Recording**: video count, size, session count, hours covered, flags
+- **Inference**: checks `.slp` prediction files per session/date
+- **Transfer**: checks latest session date per camera vs today
 
-Calendar heatmap + daily detail view:
+### 2. Thumbnail Generator (`gen_thumbs.py`)
 
-- Color-coded calendar: green (24 videos), yellow (partial), red (missing/crashed)
-- Click a date to see per-camera breakdown
-- Timeline showing which hours were recorded
-- Trend charts: daily video count, restart frequency, coverage %
+Extracts one frame (at 10 seconds) from each video as a 320px JPEG thumbnail:
 
-### 3. Slack Bot
+```bash
+uv run gen_thumbs.py                      # all dates
+uv run gen_thumbs.py --date 2024-12-01    # single date
+uv run gen_thumbs.py --days 30            # last 30 days
+uv run gen_thumbs.py --incremental        # skip existing
+```
+
+- Skips tiny files (<1MB crash artifacts)
+- ~12KB per thumbnail, ~546MB total for all 46,000+ videos
+- Requires `opencv-python-headless` (handled by `uv run` inline deps)
+
+### 3. Web Dashboard (`index.html`)
+
+Static HTML dashboard that reads `hcm_daily_status.json`:
+- Calendar heatmap with recording health
+- Transfer alert banner
+- Inference progress cards and per-date breakdown
+- Visual timeline with thumbnails and day/night cycle
+- Click-to-enlarge lightbox with arrow navigation
+- Trend charts (coverage, sessions, videos, tiny files, inference)
+
+### 4. Slack Bot (planned)
 
 - Daily morning report: yesterday's recording health
 - Alerts on missing days or crash storms
 - `/hcm-status` command for on-demand check
 
-### 4. Inference Tracker
-
-Links to gpu-dashboard inference data to show:
-
-- Which dates/videos have been processed by SLEAP
-- Inference coverage vs recording coverage
-- Estimated completion date
-
 ## File Structure
 
 ```
-hcm-monitor/
-├── README.md               # This file
-├── DATAMAP.md              # Detailed data structure and known issues
-├── scan_daily.py           # VAST scanner → hcm_daily_status.json
-├── hcm_daily_status.json   # Scanner output (daily cron updates)
-├── index.html              # Web dashboard
-└── agent/                  # Slack bot and cron scripts (future)
+hcm-dashboard/
+├── README.md                 # This file
+├── DATAMAP.md                # Detailed data structure reference
+├── scan_daily.py             # VAST scanner (3 layers: recording, inference, transfer)
+├── gen_thumbs.py             # Thumbnail generator (uv run, opencv)
+├── hcm_daily_status.json     # Scanner output (1.9MB, compact JSON)
+├── index.html                # Web dashboard
+└── thumbs/                   # Video thumbnails
+    ├── cam_01/               #   Last 30 days in repo
+    ├── cam_02/               #   Full set on exx (~546MB)
+    ├── cam_03/
+    └── cam_04/
 ```
+
+## Camera Notes
+
+As of May 2026:
+- **cam_01**: Calibration checkerboard (no mice)
+- **cam_02**: Active mouse cage
+- **cam_03**: Calibration checkerboard (no mice)
+- **cam_04**: Active mouse cage
+
+All 4 cameras had mice from Sep 2024 through at least Dec 2024. Camera assignments may have changed — verify physical labels against software numbering.
 
 ## Dependencies
 
-- **Scanner**: Python 3 (stdlib only, no pip packages)
+- **Scanner**: Python 3 (stdlib only)
+- **Thumbnails**: `opencv-python-headless` (via `uv run` inline deps)
 - **Dashboard**: None (static HTML, reads JSON)
-- **Slack**: slack-bolt (same as gpu-dashboard)
