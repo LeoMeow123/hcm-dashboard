@@ -34,7 +34,7 @@ CRASH_SESSION_THRESHOLD = 2  # >1 session means at least one crash
 PREDICTION_RE = re.compile(r"^cam_\d{2}\.\d{2}\.predictions\.slp$")
 
 # Regex patterns
-SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-\d{2}-\d{2}-\d{2}$")
+SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d{2})-(\d{2})-(\d{2})$")
 VIDEO_RE = re.compile(r"^cam_\d{2}\.(\d{2})\.mp4$")
 
 
@@ -119,12 +119,39 @@ def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
                 elif size < TINY_FILE_BYTES:
                     tiny_files += 1
 
+                # Compute wall-clock hour from session start + video index
+                sess_match = SESSION_RE.match(session_dir.name)
+                if sess_match:
+                    start_hour = int(sess_match.group(2))
+                    start_min = int(sess_match.group(3))
+                    wall_hour = start_hour + video_idx
+                    # Approximate: if session starts at :30+, the video
+                    # spans into the next clock hour
+                    wall_hour_end = wall_hour + 1
+                else:
+                    wall_hour = video_idx
+                    wall_hour_end = video_idx + 1
+
                 video_details.append({
                     "session": session_dir.name,
                     "file": mp4,
                     "index": video_idx,
                     "bytes": size,
+                    "wall_hour": wall_hour,
+                    "wall_hour_end": min(wall_hour_end, 24),
+                    "tiny": size < TINY_FILE_BYTES,
                 })
+
+        # Build compact timeline: [wall_hour, session, index] tuples as arrays
+        # Sorted by wall_hour. Excludes crash artifacts.
+        timeline = sorted(
+            [
+                [v["wall_hour"], v["session"], v["index"]]
+                for v in video_details
+                if not v["tiny"]
+            ],
+            key=lambda x: x[0],
+        )
 
         results[date_str] = {
             "sessions": len(sessions),
@@ -136,6 +163,7 @@ def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
             "empty_sessions": empty_sessions,
             "zero_byte": zero_byte,
             "tiny_files": tiny_files,
+            "timeline": timeline,
         }
 
     return results
@@ -244,8 +272,8 @@ def compute_flags(day: dict) -> list[str]:
 
 def compute_day_summary(cam_data: dict[str, dict]) -> dict:
     """Compute cross-camera summary for a date."""
-    cameras_present = [c for c in CAMERAS if c in cam_data]
-    cameras_missing = [c for c in CAMERAS if c not in cam_data]
+    cameras_present = [c for c in CAMERAS if c in cam_data and "videos" in cam_data[c]]
+    cameras_missing = [c for c in CAMERAS if c not in cam_data or "videos" not in cam_data[c]]
 
     total_videos = sum(cam_data[c]["videos"] for c in cameras_present)
     total_bytes = sum(cam_data[c]["total_bytes"] for c in cameras_present)
@@ -476,7 +504,7 @@ def main():
                           f"{c['total_mb']}MB, flags=[{flags}]")
     else:
         with open(args.output, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, separators=(",", ":"))
         print(f"\nWritten to {args.output}")
         print(f"File size: {os.path.getsize(args.output) / 1_048_576:.1f} MB")
 

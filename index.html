@@ -489,6 +489,123 @@ canvas {
   font-size: 16px;
 }
 
+/* Visual Timeline Panel */
+.visual-timeline {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+  display: none;
+}
+
+.visual-timeline.active { display: block; }
+
+.visual-timeline h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.visual-timeline .subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
+.vt-hour-labels {
+  display: flex;
+  margin-left: 60px;
+  margin-bottom: 4px;
+}
+
+.vt-hour-labels span {
+  flex: 1;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.vt-cam-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.vt-cam-label {
+  width: 60px;
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.vt-hours {
+  display: flex;
+  flex: 1;
+  gap: 1px;
+}
+
+.vt-cell {
+  flex: 1;
+  aspect-ratio: 4/3;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+}
+
+.vt-cell:hover {
+  transform: scale(1.8);
+  z-index: 20;
+  outline: 2px solid var(--blue);
+}
+
+.vt-cell img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vt-cell .vt-label {
+  position: absolute;
+  bottom: 1px;
+  left: 2px;
+  font-size: 8px;
+  color: #fff;
+  text-shadow: 0 0 3px #000;
+  z-index: 1;
+}
+
+/* Day/night backgrounds */
+.vt-cell.night { background: #0a0e14; }
+.vt-cell.day { background: #2a2520; }
+.vt-cell.missing-night { background: #0a0e14; border: 1px dashed #1a1e24; }
+.vt-cell.missing-day { background: #2a2520; border: 1px dashed #3a3530; }
+.vt-cell.has-video { background: var(--green-bg); }
+
+.vt-day-indicator {
+  display: flex;
+  margin-left: 60px;
+  margin-bottom: 8px;
+}
+
+.vt-day-indicator .vt-band {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.vt-band.night-band { background: #1a1e28; }
+.vt-band.day-band { background: #4a4030; }
+
 /* Responsive */
 @media (max-width: 768px) {
   .container { padding: 12px; }
@@ -539,6 +656,8 @@ canvas {
     <div id="detail-summary"></div>
     <div class="camera-grid" id="camera-grid"></div>
   </div>
+
+  <div class="visual-timeline" id="visual-timeline"></div>
 
   <div class="trend-section">
     <h2>Trends</h2>
@@ -832,6 +951,7 @@ function navigateDay(offset) {
 
 function closeDetail() {
   document.getElementById('detail-panel').classList.remove('active');
+  document.getElementById('visual-timeline').classList.remove('active');
   document.querySelectorAll('.day-cell.selected').forEach(el => el.classList.remove('selected'));
   selectedDate = null;
 }
@@ -964,8 +1084,90 @@ function renderDetail(dateStr) {
 
   document.getElementById('camera-grid').innerHTML = camHtml;
 
+  renderVisualTimeline(dateStr);
+
   // Scroll detail into view
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function renderVisualTimeline(dateStr) {
+  const panel = document.getElementById('visual-timeline');
+  const day = DATA.dates[dateStr];
+
+  if (!day) {
+    panel.classList.remove('active');
+    return;
+  }
+
+  panel.classList.add('active');
+
+  // Day/night: 9:30am (9.5) to 9:30pm (21.5) is "day" (lights off for mice)
+  // Night: 9:30pm to 9:30am is "night" (lights on for mice - they're nocturnal)
+  const isDayHour = (h) => h >= 9.5 && h < 21.5;
+
+  // Build hour labels
+  let html = `<h2>Visual Timeline — ${dateStr}</h2>`;
+  html += `<div class="subtitle">Day cycle (lights off) 9:30 AM - 9:30 PM | Night cycle (lights on) 9:30 PM - 9:30 AM</div>`;
+
+  // Day/night band
+  html += '<div class="vt-day-indicator">';
+  for (let h = 0; h < 24; h++) {
+    html += `<div class="vt-band ${isDayHour(h + 0.5) ? 'day-band' : 'night-band'}"></div>`;
+  }
+  html += '</div>';
+
+  // Hour labels
+  html += '<div class="vt-hour-labels">';
+  for (let h = 0; h < 24; h++) {
+    html += `<span>${h}</span>`;
+  }
+  html += '</div>';
+
+  // Per-camera rows
+  for (const cam of ['cam_01','cam_02','cam_03','cam_04']) {
+    const c = day.cameras[cam];
+    html += `<div class="vt-cam-row">`;
+    html += `<div class="vt-cam-label">${cam}</div>`;
+    html += `<div class="vt-hours">`;
+
+    // Build a map of wall_hour -> timeline entries
+    // Timeline format: [[wall_hour, session, index], ...]
+    const hourMap = {};
+    if (c && c.timeline) {
+      for (const t of c.timeline) {
+        const h = Math.min(t[0], 23);
+        if (!hourMap[h]) hourMap[h] = [];
+        hourMap[h].push({ s: t[1], i: t[2] });
+      }
+    }
+
+    for (let h = 0; h < 24; h++) {
+      const dayNight = isDayHour(h + 0.5) ? 'day' : 'night';
+      const entries = hourMap[h];
+
+      if (entries && entries.length > 0) {
+        const t = entries[0];
+        const thumbPath = `thumbs/${cam}/${t.s}/${String(t.i).padStart(2,'0')}.jpg`;
+
+        html += `<div class="vt-cell has-video" title="Hour ${h}: ${t.s} idx ${t.i}"
+          onmouseenter="showTooltip(event, 'Hour ${h}: ${t.s} / video ${t.i}')"
+          onmouseleave="hideTooltip()">
+          <img src="${thumbPath}" loading="lazy" onerror="this.style.display='none'">
+          <span class="vt-label">${h}:00</span>
+        </div>`;
+      } else {
+        html += `<div class="vt-cell missing-${dayNight}" title="Hour ${h}: no recording"
+          onmouseenter="showTooltip(event, 'Hour ${h}: no recording')"
+          onmouseleave="hideTooltip()">
+          <span style="opacity:0.3">—</span>
+        </div>`;
+      }
+    }
+
+    html += '</div></div>';
+  }
+
+  panel.innerHTML = html;
 }
 
 // Trend chart
