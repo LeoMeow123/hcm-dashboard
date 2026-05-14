@@ -751,6 +751,20 @@ let sortedDates = [];
 let selectedDate = null;
 let currentTrend = 'coverage';
 
+// Camera wiring mismatch — see CAMERA_SWAP.md
+// Software IDs on disk do not match physical camera labels.
+// cam_01 is correct; cam_02/03/04 are cyclically rotated.
+const CAM_PHYSICAL = {
+  'cam_01': 'Cam 1',
+  'cam_02': 'Cam 4',  // cam_02 on disk = Physical Cam 4
+  'cam_03': 'Cam 2',  // cam_03 on disk = Physical Cam 2
+  'cam_04': 'Cam 3',  // cam_04 on disk = Physical Cam 3
+};
+// Display order: physical cameras 1, 2, 3, 4
+const CAM_ORDER = ['cam_01', 'cam_03', 'cam_04', 'cam_02'];
+const CAMERAS = ['cam_01', 'cam_02', 'cam_03', 'cam_04'];
+const camLabel = (id) => CAM_PHYSICAL[id] || id;
+
 async function loadData() {
   try {
     const resp = await fetch('hcm_daily_status.json');
@@ -793,7 +807,7 @@ function renderTransferAlert() {
   for (const [cam, info] of Object.entries(transfer)) {
     const behind = info.days_behind ?? 999;
     maxBehind = Math.max(maxBehind, behind);
-    details.push(`${cam}: ${info.latest_date} (${behind}d ago)`);
+    details.push(`${camLabel(cam)}: ${info.latest_date} (${behind}d ago)`);
   }
 
   let cls, icon, msg;
@@ -827,7 +841,7 @@ function renderSummary() {
   let totalTiny = 0, totalSessions = 0, totalVideos = 0;
   for (const d of sortedDates) {
     const day = DATA.dates[d];
-    for (const cam of ['cam_01','cam_02','cam_03','cam_04']) {
+    for (const cam of CAMERAS) {
       if (day.cameras[cam]) {
         totalHours += day.cameras[cam].hours_count;
         totalTiny += day.cameras[cam].tiny_files;
@@ -1054,19 +1068,20 @@ function renderDetail(dateStr) {
     <p style="color:var(--text-dim);margin-bottom:12px">
       ${summary.total_videos} videos across ${summary.total_sessions} sessions,
       ${summary.cameras_present}/4 cameras
-      ${summary.cameras_missing.length ? ` (missing: ${summary.cameras_missing.join(', ')})` : ''}
+      ${summary.cameras_missing.length ? ` (missing: ${summary.cameras_missing.map(camLabel).join(', ')})` : ''}
       — ${summary.total_mb.toLocaleString()} MB total
       ${infLine}
     </p>
   `;
 
   let camHtml = '';
-  for (const cam of ['cam_01','cam_02','cam_03','cam_04']) {
+  for (const cam of CAM_ORDER) {
     const c = day.cameras[cam];
+    const label = camLabel(cam);
     if (!c) {
       camHtml += `
         <div class="camera-card">
-          <h3>${cam} <span class="status-badge missing">Missing</span></h3>
+          <h3>${label} <span class="status-badge missing">Missing</span></h3>
           <p style="color:var(--text-dim)">No data for this camera on this date.</p>
         </div>`;
       continue;
@@ -1097,7 +1112,7 @@ function renderDetail(dateStr) {
 
     camHtml += `
       <div class="camera-card">
-        <h3>${cam}
+        <h3>${label} <span style="color:var(--text-dim);font-weight:400;font-size:11px">(${cam})</span>
           ${c.flags && c.flags.includes('healthy') ?
             '<span class="status-badge healthy">Healthy</span>' :
             `<span style="color:var(--text-dim);font-weight:400;font-size:12px">${c.hours_count}/24 hours</span>`}
@@ -1195,11 +1210,11 @@ function renderVisualTimeline(dateStr) {
   // Collect all images for lightbox navigation
   const allImages = [];
 
-  // Per-camera rows
-  for (const cam of ['cam_01','cam_02','cam_03','cam_04']) {
+  // Per-camera rows (physical order)
+  for (const cam of CAM_ORDER) {
     const c = day.cameras[cam];
     html += `<div class="vt-cam-row">`;
-    html += `<div class="vt-cam-label">${cam}</div>`;
+    html += `<div class="vt-cam-label">${camLabel(cam)}</div>`;
     html += `<div class="vt-hours">`;
 
     // Build a map of wall_hour -> timeline entries
@@ -1221,7 +1236,7 @@ function renderVisualTimeline(dateStr) {
         const t = entries[0];
         const thumbPath = `thumbs/${cam}/${t.s}/${String(t.i).padStart(2,'0')}.jpg`;
         const imgIdx = allImages.length;
-        const caption = `${cam} — Hour ${h}:00 — ${t.s} / video ${t.i}`;
+        const caption = `${camLabel(cam)} — Hour ${h}:00 — ${t.s} / video ${t.i}`;
         allImages.push({ src: thumbPath, caption });
 
         html += `<div class="vt-cell has-video" title="Hour ${h}: ${t.s} idx ${t.i}"
