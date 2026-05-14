@@ -609,6 +609,64 @@ canvas {
 .vt-band.night-band { background: #1a1e28; }
 .vt-band.day-band { background: #4a4030; }
 
+/* Lightbox */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lightbox.active { display: flex; }
+
+.lightbox img {
+  max-width: 90vw;
+  max-height: 80vh;
+  border-radius: 8px;
+  box-shadow: 0 4px 40px rgba(0,0,0,0.5);
+}
+
+.lightbox .lb-caption {
+  color: var(--text);
+  font-size: 14px;
+  text-align: center;
+}
+
+.lightbox .lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 36px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 20px;
+  user-select: none;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.lightbox .lb-nav:hover { opacity: 1; }
+.lightbox .lb-prev { left: 10px; }
+.lightbox .lb-next { right: 10px; }
+
+.lightbox .lb-close {
+  position: absolute;
+  top: 16px;
+  right: 24px;
+  font-size: 28px;
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.lightbox .lb-close:hover { opacity: 1; }
+
 /* Responsive */
 @media (max-width: 768px) {
   .container { padding: 12px; }
@@ -678,6 +736,14 @@ canvas {
 </div>
 
 <div class="tooltip" id="tooltip"></div>
+
+<div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
+  <span class="lb-close" onclick="closeLightbox()">&times;</span>
+  <span class="lb-nav lb-prev" onclick="navLightbox(event,-1)">&lsaquo;</span>
+  <span class="lb-nav lb-next" onclick="navLightbox(event,1)">&rsaquo;</span>
+  <img id="lb-img" src="" alt="">
+  <div class="lb-caption" id="lb-caption"></div>
+</div>
 
 <script>
 let DATA = null;
@@ -1126,6 +1192,9 @@ function renderVisualTimeline(dateStr) {
   }
   html += '</div>';
 
+  // Collect all images for lightbox navigation
+  const allImages = [];
+
   // Per-camera rows
   for (const cam of ['cam_01','cam_02','cam_03','cam_04']) {
     const c = day.cameras[cam];
@@ -1151,10 +1220,14 @@ function renderVisualTimeline(dateStr) {
       if (entries && entries.length > 0) {
         const t = entries[0];
         const thumbPath = `thumbs/${cam}/${t.s}/${String(t.i).padStart(2,'0')}.jpg`;
+        const imgIdx = allImages.length;
+        const caption = `${cam} — Hour ${h}:00 — ${t.s} / video ${t.i}`;
+        allImages.push({ src: thumbPath, caption });
 
         html += `<div class="vt-cell has-video" title="Hour ${h}: ${t.s} idx ${t.i}"
           onmouseenter="showTooltip(event, 'Hour ${h}: ${t.s} / video ${t.i}')"
-          onmouseleave="hideTooltip()">
+          onmouseleave="hideTooltip()"
+          data-img-idx="${imgIdx}">
           <img src="${thumbPath}" loading="lazy" onerror="this.style.display='none'">
           <span class="vt-label">${h}:00</span>
         </div>`;
@@ -1171,7 +1244,46 @@ function renderVisualTimeline(dateStr) {
   }
 
   panel.innerHTML = html;
+
+  // Attach click handlers for lightbox
+  panel.querySelectorAll('.vt-cell[data-img-idx]').forEach(cell => {
+    cell.addEventListener('click', () => {
+      const idx = parseInt(cell.dataset.imgIdx);
+      openLightbox(allImages[idx].src, allImages[idx].caption, allImages, idx);
+    });
+  });
 }
+
+// Lightbox
+let lbImages = []; // [{src, caption}]
+let lbIndex = 0;
+
+function openLightbox(src, caption, allImages, idx) {
+  lbImages = allImages || [{src, caption}];
+  lbIndex = idx || 0;
+  document.getElementById('lb-img').src = lbImages[lbIndex].src;
+  document.getElementById('lb-caption').textContent = lbImages[lbIndex].caption;
+  document.getElementById('lightbox').classList.add('active');
+}
+
+function closeLightbox(e) {
+  if (e && e.target !== e.currentTarget && !e.target.classList.contains('lb-close')) return;
+  document.getElementById('lightbox').classList.remove('active');
+}
+
+function navLightbox(e, dir) {
+  e.stopPropagation();
+  lbIndex = (lbIndex + dir + lbImages.length) % lbImages.length;
+  document.getElementById('lb-img').src = lbImages[lbIndex].src;
+  document.getElementById('lb-caption').textContent = lbImages[lbIndex].caption;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('lightbox').classList.contains('active')) return;
+  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowLeft') navLightbox(e, -1);
+  if (e.key === 'ArrowRight') navLightbox(e, 1);
+});
 
 // Trend chart
 function setTrend(type) {
