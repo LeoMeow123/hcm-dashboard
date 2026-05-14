@@ -547,8 +547,8 @@ canvas {
 }
 
 .vt-cell {
-  flex: 1;
-  height: 36px;
+  flex: 1 1 0;
+  height: 48px;
   border-radius: 3px;
   position: relative;
   overflow: hidden;
@@ -559,7 +559,6 @@ canvas {
   font-size: 9px;
   color: var(--text-dim);
   transition: transform 0.15s, z-index 0s;
-  min-width: 0;
 }
 
 .vt-cell:hover {
@@ -593,6 +592,7 @@ canvas {
 .vt-cell.missing-night { background: #0a0e14; border: 1px dashed #1a1e24; }
 .vt-cell.missing-day { background: #2a2520; border: 1px dashed #3a3530; }
 .vt-cell.has-video { background: var(--green-bg); }
+.vt-cell.no-thumb img { display: none; }
 
 .vt-day-indicator {
   display: flex;
@@ -1228,7 +1228,7 @@ function renderVisualTimeline(dateStr) {
           onmouseenter="showTooltip(event, 'Hour ${h}: ${t.s} / video ${t.i}')"
           onmouseleave="hideTooltip()"
           data-img-idx="${imgIdx}">
-          <img src="${thumbPath}" loading="lazy" onerror="this.style.display='none'">
+          <img src="${thumbPath}" onerror="this.parentElement.classList.add('no-thumb')">
           <span class="vt-label">${h}:00</span>
         </div>`;
       } else {
