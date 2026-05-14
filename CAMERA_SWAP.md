@@ -58,6 +58,78 @@ PHYSICAL_TO_SOFTWARE = {
 }
 ```
 
+## Instructions for Any Analysis Session
+
+**READ THIS FIRST before writing any code that touches HCM camera data.**
+
+The files on disk use WRONG camera IDs. When you read from disk, you must
+remap before reporting results. Here is exactly what to do:
+
+### Step 1: Read files using software IDs (as stored on disk)
+
+```python
+# Paths on disk use software IDs — do NOT change these
+RECORDINGS = "/home/exx/vast/lee/2024-09-24-LeeAPP"
+INFERENCE = "/home/exx/vast/leo/datasets/inference-Kuo-Fen-HCM"
+
+# To load Physical Cam 2's videos, read from cam_03/ (not cam_02/)
+# To load Physical Cam 3's videos, read from cam_04/ (not cam_03/)
+# To load Physical Cam 4's videos, read from cam_02/ (not cam_04/)
+```
+
+### Step 2: Apply mapping before any output, plots, or reports
+
+```python
+SOFTWARE_TO_PHYSICAL = {
+    "cam_01": "cam_01",  # correct
+    "cam_02": "cam_04",  # cam_02 on disk is Physical Cam 4
+    "cam_03": "cam_02",  # cam_03 on disk is Physical Cam 2
+    "cam_04": "cam_03",  # cam_04 on disk is Physical Cam 3
+}
+
+PHYSICAL_TO_SOFTWARE = {
+    "cam_01": "cam_01",  # correct
+    "cam_02": "cam_03",  # Physical Cam 2 files are in cam_03/
+    "cam_03": "cam_04",  # Physical Cam 3 files are in cam_04/
+    "cam_04": "cam_02",  # Physical Cam 4 files are in cam_02/
+}
+```
+
+### Step 3: Use this pattern in every script
+
+```python
+from pathlib import Path
+
+RECORDINGS = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")
+
+SOFTWARE_TO_PHYSICAL = {
+    "cam_01": "cam_01",
+    "cam_02": "cam_04",
+    "cam_03": "cam_02",
+    "cam_04": "cam_03",
+}
+
+# Read from disk using software IDs
+for software_id in ["cam_01", "cam_02", "cam_03", "cam_04"]:
+    cam_dir = RECORDINGS / software_id
+    physical_id = SOFTWARE_TO_PHYSICAL[software_id]
+
+    # ... do analysis on cam_dir ...
+
+    # When printing/plotting/saving, use physical_id
+    print(f"{physical_id}: {result}")
+    # e.g., "cam_02: 24 videos" (Physical Cam 2, loaded from cam_03/)
+```
+
+### Common mistakes to avoid
+
+- Do NOT use `cam_02` as a label when you loaded from `cam_02/` — that's Physical Cam 4
+- Do NOT rename files or directories on VAST
+- Do NOT hardcode `for cam in ["cam_01", "cam_02", ...]` in display order — use
+  `["cam_01", "cam_03", "cam_04", "cam_02"]` to get physical order 1, 2, 3, 4
+- If loading `.slp` inference files, the camera ID in the filename (`cam_03.00.predictions.slp`)
+  is the SOFTWARE ID, not the physical camera
+
 ## Rules
 
 1. **NEVER rename files or directories on VAST.** Robocopy and inference depend
