@@ -24,6 +24,7 @@ from pathlib import Path
 
 DATA_ROOT = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")
 INFERENCE_ROOT = Path("/home/exx/vast/leo/datasets/inference-Kuo-Fen-HCM")
+INFERENCE_LOG_DIR = Path("/home/exx/vast/leo/2026-01-28-HCM-APP/scratch/2026-02-26-inference-benchmark/inference_log")
 CAMERAS = ["cam_01", "cam_02", "cam_03", "cam_04"]
 OUTPUT_FILE = Path(__file__).parent / "hcm_daily_status.json"
 
@@ -245,6 +246,38 @@ def get_inference_skip_dates(data: dict) -> dict[str, set[str]]:
     return cam_skip
 
 
+def get_inference_totals() -> dict:
+    """Read inference totals from GPU dashboard JSONL logs.
+
+    These logs have accurate videos_done/videos_total per camera,
+    unlike our own scan which may miss dates.
+    """
+    totals = {}
+    for camera in CAMERAS:
+        log_file = INFERENCE_LOG_DIR / f"{camera}_progress.jsonl"
+        if not log_file.exists():
+            continue
+        try:
+            with open(log_file) as f:
+                lines = f.readlines()
+            # Read last valid JSON entry
+            for line in reversed(lines):
+                try:
+                    d = json.loads(line.strip())
+                    totals[camera] = {
+                        "videos_done": d.get("videos_done", 0),
+                        "videos_total": d.get("videos_total", 0),
+                        "sessions_done": d.get("sessions_done", 0),
+                        "sessions_total": d.get("sessions_total", 0),
+                    }
+                    break
+                except (json.JSONDecodeError, KeyError):
+                    continue
+        except OSError:
+            continue
+    return totals
+
+
 def check_transfer_freshness() -> dict:
     """Check the latest session date per camera to detect transfer gaps."""
     result = {}
@@ -362,10 +395,14 @@ def main():
     parser.add_argument("--days", type=int, help="Only scan the last N days")
     args = parser.parse_args()
 
+    # How many recent days to always rescan (catches late-arriving robocopy data)
+    RESCAN_DAYS = 3
+
     # Load existing or start fresh
     if args.full:
         data = {"scan_info": {}, "dates": {}}
         after_date = None
+        rescan_dates = set()
         print("Full scan mode — scanning all dates")
     else:
         data = load_existing(args.output)
@@ -374,6 +411,16 @@ def main():
             print(f"Incremental scan — scanning dates after {after_date}")
         else:
             print("No existing data — scanning all dates")
+
+        # Always rescan recent days (robocopy adds files 1-2 days late)
+        # +1 because scan_camera uses strict > (skips dates <= after_date)
+        rescan_cutoff = (datetime.now() - timedelta(days=RESCAN_DAYS + 1)).strftime("%Y-%m-%d")
+        rescan_dates = {d for d in data.get("dates", {}) if d >= rescan_cutoff}
+        if rescan_dates:
+            print(f"Rescanning {len(rescan_dates)} recent dates (last {RESCAN_DAYS} days)")
+            # Set after_date to before the rescan window so these dates get picked up
+            if after_date and rescan_cutoff < after_date:
+                after_date = rescan_cutoff
 
     if args.days:
         cutoff = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
@@ -497,18 +544,13 @@ def main():
         1 for d in data["dates"].values()
         if d["summary"]["status"] == "missing"
     )
-    # Inference totals
+    # Inference totals — use GPU dashboard logs (accurate global counts)
+    inf_totals = get_inference_totals()
+    total_inf_videos = sum(t["videos_done"] for t in inf_totals.values())
+    total_rec_videos = sum(t["videos_total"] for t in inf_totals.values())
     inf_complete_dates = sum(
         1 for d in data["dates"].values()
         if d["summary"].get("inference", {}).get("complete", False)
-    )
-    total_inf_videos = sum(
-        d["summary"].get("inference", {}).get("videos_done", 0)
-        for d in data["dates"].values()
-    )
-    total_rec_videos = sum(
-        d["summary"].get("inference", {}).get("videos_total", 0)
-        for d in data["dates"].values()
     )
 
     data["scan_info"]["overall"] = {
@@ -518,6 +560,7 @@ def main():
         "inference_complete_dates": inf_complete_dates,
         "inference_videos_done": total_inf_videos,
         "inference_videos_total": total_rec_videos,
+        "inference_per_camera": {cam: inf_totals.get(cam, {}) for cam in CAMERAS},
     }
     data["scan_info"]["transfer"] = transfer
 
