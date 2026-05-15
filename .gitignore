@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .DS_Store
 thumbs/
+.slack_config
+composite_2*.jpg

@@ -20,8 +20,14 @@ python3 scan_daily.py
 echo "[2/5] Generating thumbnails..."
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless gen_thumbs.py --days 30 --incremental
 
-# 3. Git: manage 30-day sliding window of thumbs
-echo "[3/5] Updating git thumbs..."
+# 3. Generate composite visual timeline for latest date (used by Slack report)
+echo "[3/6] Generating composite..."
+LATEST_DATE=$(python3 -c "import json;d=json.load(open('hcm_daily_status.json'));print(sorted(d['dates'].keys())[-1])")
+VIRTUAL_ENV= uv run --no-project --with opencv-python-headless --with numpy \
+    gen_composite.py --date "$LATEST_DATE" --output composite_latest.jpg
+
+# 4. Git: manage 30-day sliding window of thumbs
+echo "[4/6] Updating git thumbs..."
 CUTOFF="$(date -d '30 days ago' '+%Y-%m-%d')"
 
 # Collect dirs to remove and dirs to add
@@ -53,17 +59,17 @@ if [ ${#to_add[@]} -gt 0 ]; then
   printf '%s\0' "${to_add[@]}" | xargs -0 git add -f 2>/dev/null || true
 fi
 
-# 4. Commit if there are changes
-echo "[4/5] Committing..."
-git add hcm_daily_status.json
+# 5. Commit if there are changes
+echo "[5/6] Committing..."
+git add hcm_daily_status.json composite_latest.jpg
 if git diff --cached --quiet; then
   echo "No changes to commit."
 else
   git commit -m "Daily update: $(date '+%Y-%m-%d')"
 fi
 
-# 5. Push
-echo "[5/5] Pushing to GitHub..."
+# 6. Push
+echo "[6/6] Pushing to GitHub..."
 git push
 
 echo "=== Dashboard update complete: $(date '+%Y-%m-%d %H:%M:%S') ==="
