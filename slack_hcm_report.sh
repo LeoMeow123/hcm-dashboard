@@ -45,8 +45,17 @@ if not sorted_dates:
     print(json.dumps({"text": ":x: No HCM data available"}))
     sys.exit(0)
 
-latest = sorted_dates[-1]
-day = data["dates"][latest]
+# The latest date is always incomplete (~2-3 videos) because robocopy
+# runs at 3AM — only hours 00:00-03:00 are copied. Report the previous
+# day which has the full 24hr picture.
+if len(sorted_dates) >= 2:
+    report_date = sorted_dates[-2]
+    latest_date = sorted_dates[-1]
+else:
+    report_date = sorted_dates[-1]
+    latest_date = report_date
+
+day = data["dates"][report_date]
 summary = day["summary"]
 transfer = data.get("scan_info", {}).get("transfer", {})
 
@@ -87,11 +96,11 @@ inf_total = overall.get("inference_videos_total", 1)
 inf_pct = inf_done / inf_total * 100 if inf_total > 0 else 0
 
 text_lines = [
-    f":house: *HCM Recording Health - {latest}*",
+    f":house: *HCM Recording Health - {report_date}*",
     "",
     transfer_line,
     "",
-    f"{status_emoji.get(day_status, '')} *Latest Recording ({latest}):*",
+    f"{status_emoji.get(day_status, '')} *Recording ({report_date}):*",
 ] + cam_lines + [
     f"   *Total: {summary['total_videos']} vid, {summary['total_sessions']} sess - {day_status}*",
     "",
@@ -105,8 +114,8 @@ blocks = [
     {
         "type": "image",
         "image_url": composite_url + f"?t={int(datetime.now().timestamp())}",
-        "alt_text": f"HCM Visual Timeline - {latest}",
-        "title": {"type": "plain_text", "text": f"Visual Timeline - {latest}"},
+        "alt_text": f"HCM Visual Timeline - {report_date}",
+        "title": {"type": "plain_text", "text": f"Visual Timeline - {report_date}"},
     },
     {
         "type": "actions",
