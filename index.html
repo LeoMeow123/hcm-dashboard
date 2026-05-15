@@ -364,35 +364,46 @@ header h1 span { color: var(--text-dim); font-weight: 400; }
   color: var(--text-dim);
 }
 
-/* Hour timeline */
-.hour-timeline {
-  display: flex;
-  gap: 2px;
-  margin-top: 8px;
-}
-
-.hour-block {
-  flex: 1;
-  height: 20px;
-  border-radius: 2px;
-  background: #1a1e24;
+/* Coverage timeline bar */
+.coverage-bar {
   position: relative;
+  height: 28px;
+  background: #1a1e24;
+  border-radius: 3px;
+  margin-top: 8px;
+  overflow: hidden;
 }
 
-.hour-block.covered { background: var(--green); }
-.hour-block.covered-tiny { background: var(--yellow); }
+.coverage-bar .seg {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--green);
+  opacity: 0.85;
+  min-width: 1px;
+}
 
-.hour-labels {
-  display: flex;
-  gap: 2px;
+.coverage-bar .tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  background: rgba(255,255,255,0.08);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.coverage-labels {
+  position: relative;
+  height: 16px;
   margin-top: 2px;
 }
 
-.hour-labels span {
-  flex: 1;
-  text-align: center;
+.coverage-labels span {
+  position: absolute;
   font-size: 9px;
   color: var(--text-dim);
+  transform: translateX(-50%);
 }
 
 /* Flags */
@@ -1088,18 +1099,50 @@ function renderDetail(dateStr) {
       continue;
     }
 
-    // Hour timeline
-    let timelineHtml = '<div class="hour-timeline">';
-    for (let h = 0; h < 24; h++) {
-      const covered = c.hours_covered.includes(h);
-      // Check if the video at this hour is tiny (we'd need per-video data, approximate)
-      timelineHtml += `<div class="hour-block ${covered ? 'covered' : ''}" title="Hour ${h}: ${covered ? 'recorded' : 'missing'}"></div>`;
+    // Coverage timeline bar — continuous 0-24h with exact wall-clock positions
+    let timelineHtml = '<div class="coverage-bar">';
+
+    // Hour tick marks every 3 hours
+    for (let h = 0; h <= 24; h += 3) {
+      timelineHtml += `<div class="tick" style="left:${(h / 24 * 100).toFixed(2)}%"></div>`;
     }
+
+    // Video segments positioned at exact wall-clock times
+    if (c.timeline && c.timeline.length) {
+      // Compute median file size for this camera-date to estimate short video durations
+      const sizes = c.timeline.map(t => t[3]).filter(s => s > 0);
+      const medianMB = sizes.length ? sizes.sort((a,b) => a - b)[Math.floor(sizes.length / 2)] : 75;
+
+      for (const t of c.timeline) {
+        const wallHour = t[0];
+        const session = t[1];
+        const fileMB = t[3] || medianMB;
+        // Parse start minute from session name: YYYY-MM-DD-HH-MM-SS
+        const parts = session.split('-');
+        const startMin = parseInt(parts[4]) || 0;
+
+        // Estimate duration: compare to median size. Full video ≈ median → 60 min.
+        // Short video (e.g. last before crash) → proportionally shorter.
+        const estMinutes = Math.min(60, Math.max(5, Math.round((fileMB / medianMB) * 60)));
+
+        const startMins = wallHour * 60 + startMin;
+        if (startMins >= 1440) continue;
+        const endMins = Math.min(startMins + estMinutes, 1440);
+
+        const left = (startMins / 1440 * 100).toFixed(2);
+        const width = Math.max(0.3, (endMins - startMins) / 1440 * 100).toFixed(2);
+        const fmtTime = m => `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`;
+        const durLabel = estMinutes < 55 ? ` ~${estMinutes}min` : '';
+        timelineHtml += `<div class="seg" style="left:${left}%;width:${width}%" title="${fmtTime(startMins)} - ${fmtTime(endMins)}${durLabel} (${fileMB}MB)"></div>`;
+      }
+    }
+
     timelineHtml += '</div>';
 
-    let labelsHtml = '<div class="hour-labels">';
-    for (let h = 0; h < 24; h++) {
-      labelsHtml += `<span>${h % 6 === 0 ? h : ''}</span>`;
+    // Hour labels
+    let labelsHtml = '<div class="coverage-labels">';
+    for (let h = 0; h <= 24; h += 3) {
+      labelsHtml += `<span style="left:${(h / 24 * 100).toFixed(2)}%">${h}</span>`;
     }
     labelsHtml += '</div>';
 

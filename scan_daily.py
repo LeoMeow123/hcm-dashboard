@@ -159,7 +159,8 @@ def scan_camera(camera: str, after_date: str | None = None,
         hours_covered = {v["index"] for v in all_vids}
 
         timeline = sorted(
-            [[v["wall_hour"], v["session"], v["index"]]
+            [[v["wall_hour"], v["session"], v["index"],
+              round(v["bytes"] / 1_048_576, 1)]
              for v in all_vids if not v["tiny"]],
             key=lambda x: x[0],
         )
