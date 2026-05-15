@@ -7,7 +7,7 @@ Detailed documentation of the HCM recording data on VAST.
 - **Path**: `/home/exx/vast/lee/2024-09-24-LeeAPP/`
 - **Origin**: Basler cameras → recording PC → robocopy to VAST
 - **Recording start**: 2024-09-24
-- **Status**: Ongoing (latest: 2026-05-14)
+- **Status**: Ongoing (latest: 2026-05-15)
 - **Camera wiring**: Software IDs do not match physical labels — see [CAMERA_SWAP.md](CAMERA_SWAP.md)
 
 ## Directory Structure
@@ -152,11 +152,11 @@ Each session folder contains `cam_XX.NN.predictions.slp` files.
 
 | Camera | Videos Done | Videos Total | Progress |
 |--------|-------------|--------------|----------|
-| cam_01 (Phys Cam 1) | 10,140 | 15,935 | 63.6% |
-| cam_02 (Phys Cam 4) | 11,813 | 16,009 | 73.8% |
-| cam_03 (Phys Cam 2) | 10,219 | 15,995 | 63.9% |
-| cam_04 (Phys Cam 3) | 11,664 | 15,958 | 73.1% |
-| **Total** | **43,836** | **63,897** | **68.6%** |
+| cam_01 (Phys Cam 1) | 11,584 | 15,935 | 72.7% |
+| cam_02 (Phys Cam 4) | 11,816 | 16,009 | 73.8% |
+| cam_03 (Phys Cam 2) | 11,664 | 15,995 | 72.9% |
+| cam_04 (Phys Cam 3) | 11,666 | 15,958 | 73.1% |
+| **Total** | **46,730** | **63,897** | **73.1%** |
 
 Running on exx + 2 helper workstations.
 

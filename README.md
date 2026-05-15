@@ -20,9 +20,9 @@ Nobody notices these problems until weeks later when analysis fails. This dashbo
 | Metric | Value |
 |--------|-------|
 | Recording period | 2024-09-24 to present (~500 days) |
-| Inference progress | **68.6%** (43,836 / 63,897 videos) |
-| Healthy days | ~20 |
-| Degraded days | ~160 |
+| Inference progress | **73.1%** (46,730 / 63,897 videos) |
+| Healthy days | 58 |
+| Degraded days | 438 |
 
 ## Camera Wiring Mismatch
 
@@ -95,8 +95,8 @@ Everything runs automatically via cron on exx:
 ### slack_hcm_report.sh (8:05 AM daily)
 
 Posts to Slack via webhook:
-- Recording health summary with per-camera breakdown
-- Transfer status
+- Recording health for the latest **complete** day (skips the partial robocopy day)
+- Per-camera breakdown with transfer status
 - Inference progress (from GPU dashboard logs)
 - Composite visual timeline image (hosted on GitHub Pages)
 
@@ -108,9 +108,10 @@ Walks VAST, groups sessions by date, produces `hcm_daily_status.json`:
 
 ```bash
 python3 scan_daily.py              # incremental (only new dates + last 3 days)
-python3 scan_daily.py --full       # full rescan
+python3 scan_daily.py --full       # full rescan (~3 min with parallelism)
 python3 scan_daily.py --dry-run    # print without writing
 python3 scan_daily.py --days 30    # only last 30 days
+python3 scan_daily.py --workers 64 # tune thread count (default: 16)
 ```
 
 Scanning layers:
@@ -119,10 +120,12 @@ Scanning layers:
 - **Inference (totals)**: reads from GPU dashboard JSONL logs for accurate global counts
 - **Transfer**: checks latest session date per camera vs today
 
-Incremental optimizations:
-- Only scans new recording dates (+ rescans last 3 days for late robocopy data)
-- Skips inference scan for dates already complete or without recording data
-- ~5 seconds incremental vs ~15 minutes full scan
+Performance:
+- **Parallel I/O**: 4 cameras scanned concurrently, each with a thread pool (default 16 threads) for session-level VAST I/O
+- **Incremental**: only scans new dates + rescans last 3 days for late robocopy data
+- **Inference skip**: skips dates already complete or without recording data
+- **Atomic write**: JSON written to temp file then renamed, so interrupted scans can't corrupt the dashboard
+- ~5 seconds incremental, ~3 minutes full scan
 
 ### 2. Thumbnail Generator (`gen_thumbs.py`)
 
@@ -221,7 +224,7 @@ vast/lee/2024-09-24-LeeAPP/
 
 ## Dependencies
 
-- **Scanner**: Python 3 (stdlib + reads GPU dashboard logs)
+- **Scanner**: Python 3 (stdlib + `concurrent.futures` for parallel I/O)
 - **Thumbnails/Composite**: `opencv-python-headless`, `numpy` (via `uv run` inline deps)
-- **Dashboard**: None (static HTML, reads JSON)
+- **Dashboard**: None (static HTML, reads JSON with cache-busting)
 - **Slack**: webhook + bot token (in `.slack_config`)
