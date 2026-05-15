@@ -767,7 +767,7 @@ const camLabel = (id) => CAM_PHYSICAL[id] || id;
 
 async function loadData() {
   try {
-    const resp = await fetch('hcm_daily_status.json');
+    const resp = await fetch('hcm_daily_status.json?t=' + Date.now());
     DATA = await resp.json();
     sortedDates = Object.keys(DATA.dates).sort();
     render();
@@ -842,11 +842,12 @@ function renderSummary() {
   for (const d of sortedDates) {
     const day = DATA.dates[d];
     for (const cam of CAMERAS) {
-      if (day.cameras[cam]) {
-        totalHours += day.cameras[cam].hours_count;
-        totalTiny += day.cameras[cam].tiny_files;
-        totalSessions += day.cameras[cam].sessions;
-        totalVideos += day.cameras[cam].videos;
+      const c = day.cameras[cam];
+      if (c && c.hours_count != null) {
+        totalHours += c.hours_count || 0;
+        totalTiny += c.tiny_files || 0;
+        totalSessions += c.sessions || 0;
+        totalVideos += c.videos || 0;
       }
     }
   }
@@ -971,7 +972,7 @@ function renderCalendar() {
 
       const summary = dayData.summary;
       const avgHours = summary.cameras_present > 0 ?
-        Object.values(dayData.cameras).reduce((s,c) => s + c.hours_count, 0) / summary.cameras_present : 0;
+        Object.values(dayData.cameras).reduce((s,c) => s + (c.hours_count || 0), 0) / summary.cameras_present : 0;
       const maxSessions = summary.max_sessions_any_cam;
 
       let cls = 'no-data';
@@ -1331,7 +1332,7 @@ function renderTrend() {
     const cams = Object.values(day.cameras);
     switch (currentTrend) {
       case 'coverage':
-        return cams.length ? cams.reduce((s,c) => s + c.hours_count, 0) / (4 * 24) * 100 : 0;
+        return cams.length ? cams.reduce((s,c) => s + (c.hours_count || 0), 0) / (4 * 24) * 100 : 0;
       case 'sessions':
         return day.summary.total_sessions;
       case 'videos':
