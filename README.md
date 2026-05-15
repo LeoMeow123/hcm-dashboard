@@ -2,7 +2,7 @@
 
 **https://leomeow123.github.io/hcm-dashboard/**
 
-Daily health monitoring for the Home Cage Monitoring (HCM) recording pipeline. Scans VAST for recording issues, tracks SLEAP inference progress, monitors data transfer, and reports via web dashboard.
+Daily health monitoring for the Home Cage Monitoring (HCM) recording pipeline. Scans VAST for recording issues, tracks SLEAP inference progress, monitors data transfer, and reports via web dashboard + Slack.
 
 ## Problem
 
@@ -19,12 +19,23 @@ Nobody notices these problems until weeks later when analysis fails. This dashbo
 
 | Metric | Value |
 |--------|-------|
-| Recording period | 2024-09-24 to present (495 days) |
-| Hour coverage | **44.6%** (21,181 / 47,520 camera-hours) |
-| Healthy days | 58 (12%) |
-| Degraded days | 436 (88%) |
-| Crash artifacts | 25,394 tiny files (35% of all videos) |
-| Inference progress | 63.2% (45,374 / 71,793 videos) |
+| Recording period | 2024-09-24 to present (~500 days) |
+| Inference progress | **68.6%** (43,836 / 63,897 videos) |
+| Healthy days | ~20 |
+| Degraded days | ~160 |
+
+## Camera Wiring Mismatch
+
+Physical camera labels do not match the Bonsai software IDs on disk. **cam_01 is correct; cam_02/03/04 are cyclically rotated.** See [CAMERA_SWAP.md](CAMERA_SWAP.md) for full mapping and instructions.
+
+| Directory on disk | Physical Camera |
+|-------------------|-----------------|
+| cam_01/ | Cam 1 (correct) |
+| cam_02/ | **Cam 4** |
+| cam_03/ | **Cam 2** |
+| cam_04/ | **Cam 3** |
+
+The dashboard displays corrected physical camera labels. Files on disk are **never renamed** — the mapping is applied at display time only.
 
 ## Dashboard Features
 
@@ -41,6 +52,8 @@ Click any date to see the detail view.
 ### Transfer Alert
 Banner at the top showing whether new data is being transferred from the recording PC to VAST. Green = OK, yellow = delayed, red = stale (recording or transfer may be down).
 
+Note: robocopy runs at 3AM daily. The latest date always shows ~2-3 videos because only hours 00:00-03:00 have been copied. The full picture is available one day later (rescanned automatically).
+
 ### Per-Camera Detail
 Click a date to see per-camera breakdown:
 - Video count, session count, total size
@@ -55,39 +68,37 @@ Click a date to see per-camera breakdown:
 - **Day/night cycle**: warm background (9:30am-9:30pm lights off) and dark background (9:30pm-9:30am lights on)
 - **Click to enlarge**: lightbox with left/right arrow navigation
 - Missing hours shown with dashed borders
+- Camera rows in physical order (Cam 1-4)
 
 ### Trend Charts
 Five views: Hour Coverage, Sessions/Day, Videos/Day, Tiny Files, Inference Progress.
 
-## Data Layout
+## Daily Automation
 
-```
-vast/lee/2024-09-24-LeeAPP/
-├── cam_01/                         # 4 cameras, ~11,800 sessions each
-├── cam_02/
-├── cam_03/
-├── cam_04/
-│
-└── cam_XX/YYYY-MM-DD-HH-MM-SS/    # session folder (timestamp = start time)
-    ├── cam_XX.00.mp4               # 1hr video chunks
-    ├── cam_XX.01.mp4
-    ├── ...
-    └── cam_XX.23.mp4               # full day = 24 videos
-```
+Everything runs automatically via cron on exx:
 
-### What a healthy day looks like
+| Time | Job | What |
+|------|-----|------|
+| 3:00 AM | Robocopy (Windows) | Recording PC copies new data to VAST |
+| 6:03 AM | `update_dashboard.sh` | Scan VAST + generate thumbnails + composite image + git push |
+| 8:00 AM | GPU `slack_status.sh` | GPU status report to Slack (weekdays) |
+| 8:05 AM | `slack_hcm_report.sh` | HCM recording health + visual timeline to Slack |
 
-- 1 session per camera starting at ~00:01
-- 24 videos per session (cam_XX.00.mp4 through cam_XX.23.mp4)
-- Each video ~50-130MB, ~1hr of recording at 50fps 1280x1024
-- All 4 cameras in sync
+### update_dashboard.sh (6:03 AM daily)
 
-### What a bad day looks like
+1. Runs `scan_daily.py` (incremental scan, ~5 seconds)
+2. Generates thumbnails for last 30 days (`gen_thumbs.py --days 30 --incremental`)
+3. Generates composite visual timeline image (`gen_composite.py`)
+4. Manages 30-day sliding window of thumbnails in git
+5. Commits and pushes to GitHub Pages
 
-- Multiple sessions (recording crashed and restarted)
-- <24 total videos across all sessions (missing hours)
-- Tiny files <1MB (crash artifacts — recording started then died)
-- Missing entirely from one or more cameras
+### slack_hcm_report.sh (8:05 AM daily)
+
+Posts to Slack via webhook:
+- Recording health summary with per-camera breakdown
+- Transfer status
+- Inference progress (from GPU dashboard logs)
+- Composite visual timeline image (hosted on GitHub Pages)
 
 ## Components
 
@@ -96,16 +107,22 @@ vast/lee/2024-09-24-LeeAPP/
 Walks VAST, groups sessions by date, produces `hcm_daily_status.json`:
 
 ```bash
-python3 scan_daily.py              # incremental (only new dates)
+python3 scan_daily.py              # incremental (only new dates + last 3 days)
 python3 scan_daily.py --full       # full rescan
 python3 scan_daily.py --dry-run    # print without writing
 python3 scan_daily.py --days 30    # only last 30 days
 ```
 
-Three scanning layers:
+Scanning layers:
 - **Recording**: video count, size, session count, hours covered, flags
-- **Inference**: checks `.slp` prediction files per session/date
+- **Inference (per-date)**: checks `.slp` prediction files per session
+- **Inference (totals)**: reads from GPU dashboard JSONL logs for accurate global counts
 - **Transfer**: checks latest session date per camera vs today
+
+Incremental optimizations:
+- Only scans new recording dates (+ rescans last 3 days for late robocopy data)
+- Skips inference scan for dates already complete or without recording data
+- ~5 seconds incremental vs ~15 minutes full scan
 
 ### 2. Thumbnail Generator (`gen_thumbs.py`)
 
@@ -122,7 +139,21 @@ uv run gen_thumbs.py --incremental        # skip existing
 - ~12KB per thumbnail, ~546MB total for all 46,000+ videos
 - Requires `opencv-python-headless` (handled by `uv run` inline deps)
 
-### 3. Web Dashboard (`index.html`)
+### 3. Composite Generator (`gen_composite.py`)
+
+Generates a visual timeline image (4-camera x 24-hour grid) for Slack reports:
+
+```bash
+uv run gen_composite.py                     # latest date
+uv run gen_composite.py --date 2026-05-13   # specific date
+uv run gen_composite.py --output out.jpg    # custom output path
+```
+
+- Uses thumbnails from `thumbs/` directory
+- Day/night coloring, camera labels (physical names), status badge
+- ~50-110KB JPEG output
+
+### 4. Web Dashboard (`index.html`)
 
 Static HTML dashboard that reads `hcm_daily_status.json`:
 - Calendar heatmap with recording health
@@ -131,12 +162,13 @@ Static HTML dashboard that reads `hcm_daily_status.json`:
 - Visual timeline with thumbnails and day/night cycle
 - Click-to-enlarge lightbox with arrow navigation
 - Trend charts (coverage, sessions, videos, tiny files, inference)
+- Camera labels show physical names (Cam 1-4) with software ID in parentheses
 
-### 4. Slack Bot (planned)
+### 5. Slack Integration
 
-- Daily morning report: yesterday's recording health
-- Alerts on missing days or crash storms
-- `/hcm-status` command for on-demand check
+- **Daily report** (`slack_hcm_report.sh`): recording health + composite image at 8:05 AM
+- **Slash command** (`/hcm-status`): on-demand status via existing GPU Slack bot
+- Secrets stored in `.slack_config` (gitignored)
 
 ## File Structure
 
@@ -144,9 +176,15 @@ Static HTML dashboard that reads `hcm_daily_status.json`:
 hcm-dashboard/
 ├── README.md                 # This file
 ├── DATAMAP.md                # Detailed data structure reference
-├── scan_daily.py             # VAST scanner (3 layers: recording, inference, transfer)
-├── gen_thumbs.py             # Thumbnail generator (uv run, opencv)
-├── hcm_daily_status.json     # Scanner output (1.9MB, compact JSON)
+├── CAMERA_SWAP.md            # Camera wiring mismatch documentation
+├── scan_daily.py             # VAST scanner
+├── gen_thumbs.py             # Thumbnail generator
+├── gen_composite.py          # Composite visual timeline generator
+├── update_dashboard.sh       # Daily cron: scan + thumbs + push
+├── slack_hcm_report.sh       # Daily cron: Slack report
+├── .slack_config             # Slack secrets (gitignored)
+├── hcm_daily_status.json     # Scanner output (compact JSON)
+├── composite_latest.jpg      # Latest visual timeline composite
 ├── index.html                # Web dashboard
 └── thumbs/                   # Video thumbnails
     ├── cam_01/               #   Last 30 days in repo
@@ -157,16 +195,33 @@ hcm-dashboard/
 
 ## Camera Notes
 
-As of May 2026:
-- **cam_01**: Calibration checkerboard (no mice)
-- **cam_02**: Active mouse cage
-- **cam_03**: Calibration checkerboard (no mice)
-- **cam_04**: Active mouse cage
+As of May 2026 (see [CAMERA_SWAP.md](CAMERA_SWAP.md) for full details):
+- **Cam 1** (cam_01 on disk): Calibration checkerboard (no mice)
+- **Cam 2** (cam_03 on disk): Active mouse cage
+- **Cam 3** (cam_04 on disk): Active mouse cage
+- **Cam 4** (cam_02 on disk): Calibration checkerboard (no mice)
 
-All 4 cameras had mice from Sep 2024 through at least Dec 2024. Camera assignments may have changed — verify physical labels against software numbering.
+All 4 cameras had mice from Sep 2024 through at least Jan 2026. The mismatch between physical labels and software IDs has existed since day 1 — discovered May 2026 via dashboard thumbnails.
+
+## Data Layout
+
+```
+vast/lee/2024-09-24-LeeAPP/
+├── cam_01/                         # 4 cameras, ~11,800 sessions each
+├── cam_02/                         # (software IDs, not physical — see CAMERA_SWAP.md)
+├── cam_03/
+├── cam_04/
+│
+└── cam_XX/YYYY-MM-DD-HH-MM-SS/    # session folder (timestamp = start time)
+    ├── cam_XX.00.mp4               # 1hr video chunks
+    ├── cam_XX.01.mp4
+    ├── ...
+    └── cam_XX.23.mp4               # full day = 24 videos
+```
 
 ## Dependencies
 
-- **Scanner**: Python 3 (stdlib only)
-- **Thumbnails**: `opencv-python-headless` (via `uv run` inline deps)
+- **Scanner**: Python 3 (stdlib + reads GPU dashboard logs)
+- **Thumbnails/Composite**: `opencv-python-headless`, `numpy` (via `uv run` inline deps)
 - **Dashboard**: None (static HTML, reads JSON)
+- **Slack**: webhook + bot token (in `.slack_config`)

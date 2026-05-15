@@ -7,18 +7,22 @@ Detailed documentation of the HCM recording data on VAST.
 - **Path**: `/home/exx/vast/lee/2024-09-24-LeeAPP/`
 - **Origin**: Basler cameras → recording PC → robocopy to VAST
 - **Recording start**: 2024-09-24
-- **Status**: Ongoing (latest: 2026-05-12)
+- **Status**: Ongoing (latest: 2026-05-14)
+- **Camera wiring**: Software IDs do not match physical labels — see [CAMERA_SWAP.md](CAMERA_SWAP.md)
 
 ## Directory Structure
 
 ```
 2024-09-24-LeeAPP/
-├── cam_01/          # Calibration board (as of May 2026)
-├── cam_02/          # Active mouse cage
-├── cam_03/          # Calibration board (as of May 2026)
-├── cam_04/          # Active mouse cage
+├── cam_01/          # Physical Cam 1 — calibration board (as of May 2026)
+├── cam_02/          # Physical Cam 4 — calibration board (as of May 2026)
+├── cam_03/          # Physical Cam 2 — active mouse cage
+├── cam_04/          # Physical Cam 3 — active mouse cage
 └── video_metadata.csv   # 5.3M-line ffprobe dump (pre-existing)
 ```
+
+**WARNING**: Directory names (cam_01-04) are software IDs assigned by Bonsai.
+They do NOT match physical camera labels. See [CAMERA_SWAP.md](CAMERA_SWAP.md).
 
 ### Session Folders
 
@@ -146,11 +150,15 @@ Each session folder contains `cam_XX.NN.predictions.slp` files.
 
 ### Inference Progress
 
-| Metric | Value |
-|--------|-------|
-| Dates fully complete | 289 / 495 (58%) |
-| Videos processed | 45,374 / 71,793 (63.2%) |
-| Running on | exx + 2 helper workstations |
+| Camera | Videos Done | Videos Total | Progress |
+|--------|-------------|--------------|----------|
+| cam_01 (Phys Cam 1) | 10,140 | 15,935 | 63.6% |
+| cam_02 (Phys Cam 4) | 11,813 | 16,009 | 73.8% |
+| cam_03 (Phys Cam 2) | 10,219 | 15,995 | 63.9% |
+| cam_04 (Phys Cam 3) | 11,664 | 15,958 | 73.1% |
+| **Total** | **43,836** | **63,897** | **68.6%** |
+
+Running on exx + 2 helper workstations.
 
 Inference progress tracked in JSONL logs at:
 ```
@@ -175,6 +183,15 @@ format_tags_json, video_tags_json, ffprobe_error, raw_json
 ```
 
 Note: paths in this CSV use `/root/vast/...` (generated from a different mount point).
+
+## Robocopy Timing
+
+Robocopy runs at **3AM daily** via Windows Task Scheduler on the recording PC.
+
+**Important**: This means the latest date on VAST always shows only ~2-3 videos
+(hours 00:00-03:00). The full 24 hours of video arrive one day later when the
+next robocopy runs. The scanner automatically rescans the last 3 days to catch
+this late-arriving data.
 
 ## Key Metrics for Daily Monitor
 
