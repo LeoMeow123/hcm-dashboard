@@ -5,10 +5,15 @@ Scans the HCM recording directory, groups sessions by date, computes
 per-camera metrics, and flags recording issues. Designed to run daily
 via cron with incremental updates.
 
+Uses thread-pool parallelism for VAST I/O (network filesystem where
+latency dominates). With 192 CPU cores on exx this is safe — threads
+bypass the GIL for I/O-bound work.
+
 Usage:
     python3 scan_daily.py              # incremental (only new dates)
     python3 scan_daily.py --full       # full rescan
     python3 scan_daily.py --dry-run    # print without writing JSON
+    python3 scan_daily.py --workers 128  # tune parallelism
 """
 
 import argparse
@@ -16,7 +21,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -38,14 +45,63 @@ PREDICTION_RE = re.compile(r"^cam_\d{2}\.\d{2}\.predictions\.slp$")
 SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d{2})-(\d{2})-(\d{2})$")
 VIDEO_RE = re.compile(r"^cam_\d{2}\.(\d{2})\.mp4$")
 
+# Default parallelism: threads per camera for session-level I/O.
+# Keep conservative to avoid starving inference and other VAST I/O.
+# Full scan: 16 threads × 4 cameras = 64 total concurrent VAST ops.
+# Daily incremental only touches a few dates, so speed is fine either way.
+DEFAULT_WORKERS = 16
 
-def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
+
+def _scan_one_session(session_dir: Path) -> tuple[list[dict], bool]:
+    """Scan a single session directory for video files.
+
+    Returns (video_details, is_empty).
+    Thread-safe: no shared mutable state.
+    """
+    try:
+        files = os.listdir(session_dir)
+    except OSError:
+        return ([], True)
+
+    mp4s = [f for f in files if f.endswith(".mp4")]
+    if not mp4s:
+        return ([], True)
+
+    sess_match = SESSION_RE.match(session_dir.name)
+    start_hour = int(sess_match.group(2)) if sess_match else 0
+
+    videos = []
+    for mp4 in mp4s:
+        vm = VIDEO_RE.match(mp4)
+        if not vm:
+            continue
+        idx = int(vm.group(1))
+        try:
+            size = os.path.getsize(session_dir / mp4)
+        except OSError:
+            size = 0
+        wall_hour = start_hour + idx
+        videos.append({
+            "session": session_dir.name,
+            "file": mp4,
+            "index": idx,
+            "bytes": size,
+            "wall_hour": wall_hour,
+            "wall_hour_end": min(wall_hour + 1, 24),
+            "tiny": size < TINY_FILE_BYTES,
+        })
+    return (videos, False)
+
+
+def scan_camera(camera: str, after_date: str | None = None,
+                workers: int = DEFAULT_WORKERS) -> dict[str, dict]:
     """Scan all sessions for a camera, grouped by date.
 
     Args:
         camera: Camera name (e.g. "cam_01")
         after_date: Only scan sessions with date > this (YYYY-MM-DD).
                     None = scan everything.
+        workers: Thread pool size for parallel session I/O.
 
     Returns:
         {date_str: {sessions, videos, total_bytes, hours, empty_sessions,
@@ -56,15 +112,14 @@ def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
         print(f"  WARNING: {cam_dir} not found, skipping", file=sys.stderr)
         return {}
 
-    # Group sessions by date
-    dates: dict[str, list[Path]] = defaultdict(list)
-
+    # Phase 1: List sessions and group by date (single os.listdir — fast)
     try:
         entries = sorted(os.listdir(cam_dir))
     except OSError as e:
         print(f"  ERROR listing {cam_dir}: {e}", file=sys.stderr)
         return {}
 
+    dates: dict[str, list[Path]] = defaultdict(list)
     for entry in entries:
         m = SESSION_RE.match(entry)
         if not m:
@@ -74,108 +129,74 @@ def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
             continue
         dates[date_str].append(cam_dir / entry)
 
-    # Process each date
+    if not dates:
+        return {}
+
+    # Phase 2: Process all sessions in parallel via thread pool
+    work = [(ds, sd) for ds, sds in dates.items() for sd in sds]
+
+    date_videos: dict[str, list[dict]] = defaultdict(list)
+    date_empty: dict[str, int] = defaultdict(int)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_scan_one_session, sd): ds for ds, sd in work}
+        for f in as_completed(futures):
+            ds = futures[f]
+            try:
+                videos, empty = f.result()
+            except Exception as exc:
+                print(f"  WARNING: session scan failed: {exc}", file=sys.stderr)
+                continue
+            date_videos[ds].extend(videos)
+            if empty:
+                date_empty[ds] += 1
+
+    # Phase 3: Aggregate per-date results
     results = {}
     for date_str in sorted(dates):
-        sessions = dates[date_str]
-        total_videos = 0
-        total_bytes = 0
-        hours_covered = set()
-        empty_sessions = 0
-        zero_byte = 0
-        tiny_files = 0
-        video_details = []
+        all_vids = date_videos.get(date_str, [])
+        total_bytes = sum(v["bytes"] for v in all_vids)
+        hours_covered = {v["index"] for v in all_vids}
 
-        for session_dir in sessions:
-            try:
-                files = os.listdir(session_dir)
-            except OSError:
-                empty_sessions += 1
-                continue
-
-            mp4s = [f for f in files if f.endswith(".mp4")]
-            if not mp4s:
-                empty_sessions += 1
-                continue
-
-            for mp4 in mp4s:
-                vm = VIDEO_RE.match(mp4)
-                if not vm:
-                    continue
-
-                video_idx = int(vm.group(1))
-                filepath = session_dir / mp4
-
-                try:
-                    size = os.path.getsize(filepath)
-                except OSError:
-                    size = 0
-
-                total_videos += 1
-                total_bytes += size
-                hours_covered.add(video_idx)
-
-                if size == 0:
-                    zero_byte += 1
-                elif size < TINY_FILE_BYTES:
-                    tiny_files += 1
-
-                # Compute wall-clock hour from session start + video index
-                sess_match = SESSION_RE.match(session_dir.name)
-                if sess_match:
-                    start_hour = int(sess_match.group(2))
-                    start_min = int(sess_match.group(3))
-                    wall_hour = start_hour + video_idx
-                    # Approximate: if session starts at :30+, the video
-                    # spans into the next clock hour
-                    wall_hour_end = wall_hour + 1
-                else:
-                    wall_hour = video_idx
-                    wall_hour_end = video_idx + 1
-
-                video_details.append({
-                    "session": session_dir.name,
-                    "file": mp4,
-                    "index": video_idx,
-                    "bytes": size,
-                    "wall_hour": wall_hour,
-                    "wall_hour_end": min(wall_hour_end, 24),
-                    "tiny": size < TINY_FILE_BYTES,
-                })
-
-        # Build compact timeline: [wall_hour, session, index] tuples as arrays
-        # Sorted by wall_hour. Excludes crash artifacts.
         timeline = sorted(
-            [
-                [v["wall_hour"], v["session"], v["index"]]
-                for v in video_details
-                if not v["tiny"]
-            ],
+            [[v["wall_hour"], v["session"], v["index"]]
+             for v in all_vids if not v["tiny"]],
             key=lambda x: x[0],
         )
 
         results[date_str] = {
-            "sessions": len(sessions),
-            "videos": total_videos,
+            "sessions": len(dates[date_str]),
+            "videos": len(all_vids),
             "total_bytes": total_bytes,
             "total_mb": round(total_bytes / 1_048_576, 1),
             "hours_covered": sorted(hours_covered),
             "hours_count": len(hours_covered),
-            "empty_sessions": empty_sessions,
-            "zero_byte": zero_byte,
-            "tiny_files": tiny_files,
+            "empty_sessions": date_empty.get(date_str, 0),
+            "zero_byte": sum(1 for v in all_vids if v["bytes"] == 0),
+            "tiny_files": sum(1 for v in all_vids if 0 < v["bytes"] < TINY_FILE_BYTES),
             "timeline": timeline,
         }
 
     return results
 
 
-def scan_inference(camera: str, skip_dates: set[str] | None = None) -> dict[str, dict]:
+def _scan_one_inference_session(session_dir: Path) -> int:
+    """Count prediction .slp files in a single inference session directory."""
+    try:
+        files = os.listdir(session_dir)
+    except OSError:
+        return 0
+    return sum(1 for f in files if PREDICTION_RE.match(f))
+
+
+def scan_inference(camera: str, skip_dates: set[str] | None = None,
+                   workers: int = DEFAULT_WORKERS) -> dict[str, dict]:
     """Scan inference output for a camera, grouped by date.
 
     Args:
         camera: Camera name (e.g. "cam_01")
         skip_dates: Dates to skip (already complete). None = scan all.
+        workers: Thread pool size for parallel session I/O.
 
     Returns:
         {date_str: {sessions_done: int, videos_done: int}}
@@ -204,20 +225,28 @@ def scan_inference(camera: str, skip_dates: set[str] | None = None) -> dict[str,
     if skipped:
         print(f"    Skipped {skipped} sessions ({len(skip_dates)} complete dates)")
 
+    if not dates:
+        return {}
+
+    # Process sessions in parallel
+    work = [(ds, inf_dir / sess) for ds, sessions in dates.items() for sess in sessions]
+
+    date_slp: dict[str, int] = defaultdict(int)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_scan_one_inference_session, sd): ds for ds, sd in work}
+        for f in as_completed(futures):
+            ds = futures[f]
+            try:
+                date_slp[ds] += f.result()
+            except Exception as exc:
+                print(f"  WARNING: inference scan failed: {exc}", file=sys.stderr)
+
     results = {}
     for date_str, sessions in dates.items():
-        total_slp = 0
-        for session in sessions:
-            session_dir = inf_dir / session
-            try:
-                files = os.listdir(session_dir)
-            except OSError:
-                continue
-            total_slp += sum(1 for f in files if PREDICTION_RE.match(f))
-
         results[date_str] = {
             "sessions_done": len(sessions),
-            "videos_done": total_slp,
+            "videos_done": date_slp.get(date_str, 0),
         }
 
     return results
@@ -393,7 +422,13 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print results without writing")
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE, help="Output JSON path")
     parser.add_argument("--days", type=int, help="Only scan the last N days")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help=f"Thread pool workers per camera (default: {DEFAULT_WORKERS})")
     args = parser.parse_args()
+
+    t0 = datetime.now()
+    workers = args.workers
+    print(f"Using {workers} I/O threads per camera ({workers * 4} total across 4 cameras)")
 
     # How many recent days to always rescan (catches late-arriving robocopy data)
     RESCAN_DAYS = 3
@@ -437,19 +472,37 @@ def main():
         if total_skip:
             print(f"Inference: skipping {total_skip} camera-date pairs (complete or no recording data)")
 
-    # Scan each camera (recording + inference)
+    # --- Scan recordings: 4 cameras in parallel, each with thread pool ---
+    print("Scanning recordings (4 cameras in parallel)...")
     all_cam_data: dict[str, dict[str, dict]] = {}
-    all_inf_data: dict[str, dict[str, dict]] = {}
-    for camera in CAMERAS:
-        print(f"Scanning {camera} recordings...")
-        cam_results = scan_camera(camera, after_date)
-        all_cam_data[camera] = cam_results
-        print(f"  Found {len(cam_results)} dates with data")
+    with ThreadPoolExecutor(max_workers=4) as cam_pool:
+        futures = {
+            cam_pool.submit(scan_camera, cam, after_date, workers): cam
+            for cam in CAMERAS
+        }
+        for f in as_completed(futures):
+            cam = futures[f]
+            all_cam_data[cam] = f.result()
+            print(f"  {cam}: {len(all_cam_data[cam])} dates")
 
-        print(f"Scanning {camera} inference...")
-        inf_results = scan_inference(camera, cam_complete.get(camera))
-        all_inf_data[camera] = inf_results
-        print(f"  Found {len(inf_results)} dates with inference")
+    t_rec = datetime.now()
+    print(f"  Recording scan: {(t_rec - t0).total_seconds():.1f}s")
+
+    # --- Scan inference: 4 cameras in parallel ---
+    print("Scanning inference (4 cameras in parallel)...")
+    all_inf_data: dict[str, dict[str, dict]] = {}
+    with ThreadPoolExecutor(max_workers=4) as cam_pool:
+        futures = {
+            cam_pool.submit(scan_inference, cam, cam_complete.get(cam), workers): cam
+            for cam in CAMERAS
+        }
+        for f in as_completed(futures):
+            cam = futures[f]
+            all_inf_data[cam] = f.result()
+            print(f"  {cam}: {len(all_inf_data[cam])} dates")
+
+    t_inf = datetime.now()
+    print(f"  Inference scan: {(t_inf - t_rec).total_seconds():.1f}s")
 
     # Check transfer freshness
     print("Checking transfer freshness...")
@@ -564,8 +617,10 @@ def main():
     }
     data["scan_info"]["transfer"] = transfer
 
+    elapsed = (datetime.now() - t0).total_seconds()
+
     # Print summary
-    print(f"\n--- Scan Complete ---")
+    print(f"\n--- Scan Complete ({elapsed:.1f}s) ---")
     print(f"Total dates: {len(all_date_keys)}")
     print(f"New/updated: {new_dates}")
     print(f"Healthy: {total_healthy} | Degraded: {total_degraded} | Missing: {total_missing}")
@@ -590,8 +645,14 @@ def main():
                     print(f"    {cam}: {c['videos']} videos, {c['sessions']} sessions, "
                           f"{c['total_mb']}MB, flags=[{flags}]")
     else:
-        with open(args.output, "w") as f:
+        # Atomic write: write to temp file then rename, so interrupted
+        # scans can't leave a corrupted JSON for the dashboard.
+        with tempfile.NamedTemporaryFile(
+            "w", dir=args.output.parent, suffix=".json", delete=False
+        ) as f:
             json.dump(data, f, separators=(",", ":"))
+            tmp_path = f.name
+        os.replace(tmp_path, args.output)
         print(f"\nWritten to {args.output}")
         print(f"File size: {os.path.getsize(args.output) / 1_048_576:.1f} MB")
 
