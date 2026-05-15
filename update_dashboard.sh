@@ -10,10 +10,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-LOGDATE="$(date '+%Y-%m-%d %H:%M:%S')"
-echo "=== Dashboard update started: $LOGDATE ==="
+echo "=== Dashboard update started: $(date '+%Y-%m-%d %H:%M:%S') ==="
 
-# 1. Scan VAST (incremental — only new dates)
+# 1. Scan VAST (incremental — only new dates + incomplete inference)
 echo "[1/5] Scanning VAST..."
 python3 scan_daily.py
 
@@ -21,38 +20,38 @@ python3 scan_daily.py
 echo "[2/5] Generating thumbnails..."
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless gen_thumbs.py --days 30 --incremental
 
-# 3. Git: remove old thumbs beyond 30 days, add new ones
+# 3. Git: manage 30-day sliding window of thumbs
 echo "[3/5] Updating git thumbs..."
-CUTOFF_DATE="$(date -d '30 days ago' '+%Y-%m-%d')"
+CUTOFF="$(date -d '30 days ago' '+%Y-%m-%d')"
 
-# Remove tracked thumbs older than 30 days
+# Collect dirs to remove and dirs to add
+to_remove=()
+to_add=()
 for cam in cam_01 cam_02 cam_03 cam_04; do
-  if [ -d "thumbs/$cam" ]; then
-    for session_dir in thumbs/$cam/*/; do
-      [ -d "$session_dir" ] || continue
-      session_name="$(basename "$session_dir")"
-      # Extract date from session name (YYYY-MM-DD-HH-MM-SS)
-      session_date="${session_name:0:10}"
-      if [[ "$session_date" < "$CUTOFF_DATE" ]]; then
-        git rm -r --cached --quiet "$session_dir" 2>/dev/null || true
-      fi
-    done
-  fi
+  [ -d "thumbs/$cam" ] || continue
+  for d in thumbs/$cam/*/; do
+    [ -d "$d" ] || continue
+    sdate="$(basename "$d")"
+    sdate="${sdate:0:10}"
+    if [[ "$sdate" < "$CUTOFF" ]]; then
+      to_remove+=("$d")
+    else
+      to_add+=("$d")
+    fi
+  done
 done
 
-# Force-add last 30 days of thumbs
-for cam in cam_01 cam_02 cam_03 cam_04; do
-  if [ -d "thumbs/$cam" ]; then
-    for session_dir in thumbs/$cam/*/; do
-      [ -d "$session_dir" ] || continue
-      session_name="$(basename "$session_dir")"
-      session_date="${session_name:0:10}"
-      if [[ "$session_date" > "$CUTOFF_DATE" ]] || [[ "$session_date" == "$CUTOFF_DATE" ]]; then
-        git add -f "$session_dir" 2>/dev/null || true
-      fi
-    done
-  fi
-done
+# Batch remove old from git index
+if [ ${#to_remove[@]} -gt 0 ]; then
+  echo "  Removing ${#to_remove[@]} old thumb dirs from git..."
+  printf '%s\0' "${to_remove[@]}" | xargs -0 git rm -r --cached --quiet 2>/dev/null || true
+fi
+
+# Batch add recent
+if [ ${#to_add[@]} -gt 0 ]; then
+  echo "  Adding ${#to_add[@]} thumb dirs to git..."
+  printf '%s\0' "${to_add[@]}" | xargs -0 git add -f 2>/dev/null || true
+fi
 
 # 4. Commit if there are changes
 echo "[4/5] Committing..."

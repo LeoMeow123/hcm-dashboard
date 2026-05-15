@@ -169,11 +169,15 @@ def scan_camera(camera: str, after_date: str | None = None) -> dict[str, dict]:
     return results
 
 
-def scan_inference(camera: str) -> dict[str, dict]:
+def scan_inference(camera: str, skip_dates: set[str] | None = None) -> dict[str, dict]:
     """Scan inference output for a camera, grouped by date.
 
+    Args:
+        camera: Camera name (e.g. "cam_01")
+        skip_dates: Dates to skip (already complete). None = scan all.
+
     Returns:
-        {date_str: {sessions_done: int, videos_done: int, session_list: [...]}}
+        {date_str: {sessions_done: int, videos_done: int}}
     """
     inf_dir = INFERENCE_ROOT / camera
     if not inf_dir.is_dir():
@@ -185,11 +189,19 @@ def scan_inference(camera: str) -> dict[str, dict]:
         return {}
 
     dates: dict[str, list[str]] = defaultdict(list)
+    skipped = 0
     for entry in entries:
         m = SESSION_RE.match(entry)
         if not m:
             continue
-        dates[m.group(1)].append(entry)
+        date_str = m.group(1)
+        if skip_dates and date_str in skip_dates:
+            skipped += 1
+            continue
+        dates[date_str].append(entry)
+
+    if skipped:
+        print(f"    Skipped {skipped} sessions ({len(skip_dates)} complete dates)")
 
     results = {}
     for date_str, sessions in dates.items():
@@ -208,6 +220,29 @@ def scan_inference(camera: str) -> dict[str, dict]:
         }
 
     return results
+
+
+def get_inference_skip_dates(data: dict) -> dict[str, set[str]]:
+    """Extract per-camera sets of dates to skip in inference scan.
+
+    Skip a date for a camera if:
+    - Inference is complete (inf_vids >= rec_vids > 0), OR
+    - No recording data exists (can't compare, rescanning is pointless)
+    """
+    cam_skip: dict[str, set[str]] = {c: set() for c in CAMERAS}
+    for date_str, day_data in data.get("dates", {}).items():
+        for cam in CAMERAS:
+            cam_entry = day_data.get("cameras", {}).get(cam, {})
+            rec_vids = cam_entry.get("videos", 0)
+            inf = cam_entry.get("inference", {})
+            inf_vids = inf.get("videos_done", 0)
+            if rec_vids == 0:
+                # No recording data — nothing to compare against
+                cam_skip[cam].add(date_str)
+            elif inf_vids >= rec_vids:
+                # Inference complete
+                cam_skip[cam].add(date_str)
+    return cam_skip
 
 
 def check_transfer_freshness() -> dict:
@@ -346,6 +381,15 @@ def main():
             after_date = cutoff
         print(f"Limited to last {args.days} days (after {after_date})")
 
+    # Build skip sets for inference (dates already complete per camera)
+    if args.full:
+        cam_complete = {c: set() for c in CAMERAS}
+    else:
+        cam_complete = get_inference_skip_dates(data)
+        total_skip = sum(len(v) for v in cam_complete.values())
+        if total_skip:
+            print(f"Inference: skipping {total_skip} camera-date pairs (complete or no recording data)")
+
     # Scan each camera (recording + inference)
     all_cam_data: dict[str, dict[str, dict]] = {}
     all_inf_data: dict[str, dict[str, dict]] = {}
@@ -356,7 +400,7 @@ def main():
         print(f"  Found {len(cam_results)} dates with data")
 
         print(f"Scanning {camera} inference...")
-        inf_results = scan_inference(camera)
+        inf_results = scan_inference(camera, cam_complete.get(camera))
         all_inf_data[camera] = inf_results
         print(f"  Found {len(inf_results)} dates with inference")
 
