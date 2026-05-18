@@ -168,34 +168,45 @@ def scan_camera(camera: str, after_date: str | None = None,
             key=lambda x: x[0],
         )
 
-        # Estimate fractional hours of actual coverage.
-        # Key insight: only the LAST video in each session can be cut short
-        # (by a crash). All earlier videos completed a full hour because the
-        # next video in the sequence started after them.
-        # File size varies by activity (46-130MB), NOT by duration.
+        # Estimate fractional hours using minute-level coverage map.
+        # This avoids double-counting when crash sessions overlap the
+        # same wall-clock hours. Only the last video per session can be
+        # short; all earlier ones completed a full hour.
         from collections import defaultdict as _dd
         session_vids: dict[str, list[dict]] = _dd(list)
         for v in good_vids:
             if 0 <= v["wall_hour"] < 24 and v["bytes"] > 0:
                 session_vids[v["session"]].append(v)
 
-        # Median size across all videos (for single-video sessions)
         good_sizes = [v["bytes"] for v in good_vids if v["bytes"] > 0]
         median_bytes = sorted(good_sizes)[len(good_sizes) // 2] if good_sizes else 75 * 1_048_576
 
-        fractional_hours = 0.0
-        for sess_vids in session_vids.values():
-            sess_vids.sort(key=lambda v: v["index"])
-            # All videos except the last completed a full hour
-            fractional_hours += max(0, len(sess_vids) - 1)
-            # Last video: estimate from size ratio
-            last = sess_vids[-1]
-            if len(sess_vids) >= 2:
-                others_avg = sum(v["bytes"] for v in sess_vids[:-1]) / (len(sess_vids) - 1)
-            else:
-                others_avg = median_bytes
-            ratio = last["bytes"] / others_avg if others_avg > 0 else 1.0
-            fractional_hours += min(1.0, max(0.02, ratio))
+        # 1440-minute coverage map (1 = covered, 0 = gap)
+        coverage = [0] * 1440
+        for sess_name, svids in session_vids.items():
+            svids.sort(key=lambda v: v["index"])
+            # Parse session start minute
+            parts = sess_name.split("-")
+            start_min = int(parts[4]) if len(parts) >= 6 else 0
+
+            for i, v in enumerate(svids):
+                is_last = (i == len(svids) - 1)
+                if is_last:
+                    if len(svids) >= 2:
+                        others_avg = sum(vv["bytes"] for vv in svids[:-1]) / (len(svids) - 1)
+                    else:
+                        others_avg = median_bytes
+                    ratio = v["bytes"] / others_avg if others_avg > 0 else 1.0
+                    est_min = int(min(60, max(1, ratio * 60)))
+                else:
+                    est_min = 60
+
+                vid_start = v["wall_hour"] * 60 + start_min
+                vid_end = min(vid_start + est_min, 1440)
+                for m in range(max(0, vid_start), vid_end):
+                    coverage[m] = 1
+
+        fractional_hours = sum(coverage) / 60
 
         results[date_str] = {
             "sessions": len(dates[date_str]),

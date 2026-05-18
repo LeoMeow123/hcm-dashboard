@@ -155,15 +155,81 @@ header h1 span { color: var(--text-dim); font-weight: 400; }
   opacity: 0.5;
 }
 
+/* Calendar + event panel layout */
+.calendar-row {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 24px;
+}
+
+.calendar-row > .calendar-section { flex: 1; min-width: 0; }
+.calendar-row > .event-panel { width: 280px; flex-shrink: 0; }
+
+@media (max-width: 1100px) {
+  .calendar-row { flex-direction: column; }
+  .calendar-row > .event-panel { width: 100%; }
+}
+
 /* Calendar heatmap */
 .calendar-section {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 20px;
-  margin-bottom: 24px;
   overflow-x: auto;
 }
+
+/* Experiment event panel */
+.event-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.event-panel h2 {
+  font-size: 16px;
+  margin-bottom: 16px;
+}
+
+.event-phase {
+  margin-bottom: 14px;
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+}
+
+.event-phase .phase-dates {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.event-phase .phase-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.event-phase .cam-line {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.event-phase .cam-line .tag {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.tag-wt { background: #2e86ab; }
+.tag-app { background: #c0392b; }
+.tag-tau { background: #8e44ad; }
+.tag-pd { background: #e67e22; }
+.tag-empty { background: #555; }
 
 .calendar-section h2 {
   font-size: 16px;
@@ -702,17 +768,61 @@ canvas {
 
   <div class="summary-bar" id="summary-bar"></div>
 
-  <div class="calendar-section">
-    <h2>Recording Calendar</h2>
-    <div id="calendar"></div>
-    <div class="calendar-legend">
-      <div class="legend-item"><div class="legend-swatch" style="background:var(--green)"></div> Healthy (24h all cams)</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#4d8a3f"></div> Mostly OK (18-23h)</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:var(--yellow)"></div> Partial (6-17h)</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:#d46a18"></div> Poor (&lt;6h)</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:var(--red)"></div> Crash storm (50+ sessions)</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:var(--border)"></div> No data</div>
-      <div class="legend-item"><div class="legend-swatch" style="background:var(--purple);width:8px;height:8px;border-radius:50%"></div> Inference done</div>
+  <div class="calendar-row">
+    <div class="calendar-section">
+      <h2>Recording Calendar</h2>
+      <div id="calendar"></div>
+      <div class="calendar-legend">
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--green)"></div> Healthy (24h all cams)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4d8a3f"></div> Mostly OK (18-23h)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--yellow)"></div> Partial (6-17h)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#d46a18"></div> Poor (&lt;6h)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--red)"></div> Crash storm (50+ sessions)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--border)"></div> No data</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--purple);width:8px;height:8px;border-radius:50%"></div> Inference done</div>
+      </div>
+    </div>
+
+    <div class="event-panel">
+      <h2>Experiment Timeline</h2>
+
+      <div class="event-phase" style="border-color:#2e86ab">
+        <div class="phase-dates">2024-09-24 &rarr; ~2026-03-01</div>
+        <div class="phase-title">APP Study (Original Cohort)</div>
+        <div class="cam-line">Cam 1: <span class="tag tag-wt">WT</span> 3 mice</div>
+        <div class="cam-line">Cam 2: <span class="tag tag-app">APP</span> 3 mice</div>
+        <div class="cam-line">Cam 3: <span class="tag tag-wt">WT</span> 3 mice</div>
+        <div class="cam-line">Cam 4: <span class="tag tag-app">APP</span> 3 mice</div>
+      </div>
+
+      <div class="event-phase" style="border-color:#555">
+        <div class="phase-dates">~2026-03-01 &rarr; 2026-05-06</div>
+        <div class="phase-title">Cages Emptied</div>
+        <div class="cam-line">All 4 cages: <span class="tag tag-empty">Empty</span></div>
+      </div>
+
+      <div class="event-phase" style="border-color:#e67e22">
+        <div class="phase-dates">2026-05-07 &rarr; 2026-05-13</div>
+        <div class="phase-title">PD Mice Arrive</div>
+        <div class="cam-line">Cam 1: <span class="tag tag-empty">Empty</span></div>
+        <div class="cam-line">Cam 2: <span class="tag tag-empty">Empty</span></div>
+        <div class="cam-line">Cam 3: <span class="tag tag-pd">PD</span></div>
+        <div class="cam-line">Cam 4: <span class="tag tag-pd">PD</span></div>
+      </div>
+
+      <div class="event-phase" style="border-color:#8e44ad">
+        <div class="phase-dates">2026-05-14 4pm &rarr; present</div>
+        <div class="phase-title">Full Cohort</div>
+        <div class="cam-line">Cam 1: <span class="tag tag-tau">Tau</span></div>
+        <div class="cam-line">Cam 2: <span class="tag tag-wt">WT</span></div>
+        <div class="cam-line">Cam 3: <span class="tag tag-pd">PD</span></div>
+        <div class="cam-line">Cam 4: <span class="tag tag-pd">PD</span></div>
+      </div>
+
+      <div style="font-size:10px;color:var(--text-dim);margin-top:12px;line-height:1.4">
+        Physical camera labels. See CAMERA_SWAP.md for disk mapping.<br>
+        Original cohort: Cam 1=&#9792;WT, Cam 2=&#9794;APP, Cam 3=&#9794;WT, Cam 4=&#9792;APP (3 mice each, born ~Apr 2024).
+      </div>
     </div>
   </div>
 
