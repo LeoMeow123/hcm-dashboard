@@ -156,14 +156,33 @@ def scan_camera(camera: str, after_date: str | None = None,
     for date_str in sorted(dates):
         all_vids = date_videos.get(date_str, [])
         total_bytes = sum(v["bytes"] for v in all_vids)
-        hours_covered = {v["index"] for v in all_vids}
+        hours_covered = {v["wall_hour"] for v in all_vids if 0 <= v["wall_hour"] < 24}
+
+        # Non-tiny videos for timeline and duration estimation
+        good_vids = [v for v in all_vids if not v["tiny"]]
 
         timeline = sorted(
             [[v["wall_hour"], v["session"], v["index"],
               round(v["bytes"] / 1_048_576, 1)]
-             for v in all_vids if not v["tiny"]],
+             for v in good_vids],
             key=lambda x: x[0],
         )
+
+        # Estimate fractional hours of actual coverage.
+        # Compare each video's size to the median to estimate duration.
+        # A full ~1hr video ≈ median size; a 5-min crash leftover ≈ small.
+        good_sizes = [v["bytes"] for v in good_vids if v["bytes"] > 0]
+        if good_sizes:
+            median_bytes = sorted(good_sizes)[len(good_sizes) // 2]
+        else:
+            median_bytes = 75 * 1_048_576  # fallback 75MB
+
+        fractional_hours = 0.0
+        for v in good_vids:
+            if v["bytes"] <= 0 or v["wall_hour"] < 0 or v["wall_hour"] >= 24:
+                continue
+            est_minutes = min(60, max(1, (v["bytes"] / median_bytes) * 60))
+            fractional_hours += est_minutes / 60
 
         results[date_str] = {
             "sessions": len(dates[date_str]),
@@ -171,7 +190,7 @@ def scan_camera(camera: str, after_date: str | None = None,
             "total_bytes": total_bytes,
             "total_mb": round(total_bytes / 1_048_576, 1),
             "hours_covered": sorted(hours_covered),
-            "hours_count": len(hours_covered),
+            "hours_count": round(fractional_hours, 1),
             "empty_sessions": date_empty.get(date_str, 0),
             "zero_byte": sum(1 for v in all_vids if v["bytes"] == 0),
             "tiny_files": sum(1 for v in all_vids if 0 < v["bytes"] < TINY_FILE_BYTES),
@@ -363,7 +382,7 @@ def compute_flags(day: dict) -> list[str]:
         flags.append("zero_byte_files")
     if day["tiny_files"] > 0:
         flags.append("tiny_files")
-    if day["hours_count"] == EXPECTED_VIDEOS_PER_DAY and day["sessions"] == 1:
+    if day["hours_count"] >= 23 and day["sessions"] == 1:
         flags.append("healthy")
     return flags
 

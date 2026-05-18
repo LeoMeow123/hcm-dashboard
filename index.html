@@ -1159,7 +1159,7 @@ function renderDetail(dateStr) {
         <h3>${label} <span style="color:var(--text-dim);font-weight:400;font-size:11px">(${cam})</span>
           ${c.flags && c.flags.includes('healthy') ?
             '<span class="status-badge healthy">Healthy</span>' :
-            `<span style="color:var(--text-dim);font-weight:400;font-size:12px">${c.hours_count}/24 hours</span>`}
+            `<span style="color:var(--text-dim);font-weight:400;font-size:12px">${c.hours_count}/24h</span>`}
         </h3>
         <div class="camera-stats">
           <div class="cam-stat">
@@ -1185,8 +1185,8 @@ function renderDetail(dateStr) {
             <div class="lbl">Empty sessions</div>
           </div>
           <div class="cam-stat">
-            <div class="num" style="color:${c.hours_count === 24 ? 'var(--green)' : 'var(--yellow)'}">${c.hours_count}</div>
-            <div class="lbl">Hours covered</div>
+            <div class="num" style="color:${c.hours_count >= 23 ? 'var(--green)' : 'var(--yellow)'}">${c.hours_count}</div>
+            <div class="lbl">Hours recorded</div>
           </div>
         </div>
         ${timelineHtml}
