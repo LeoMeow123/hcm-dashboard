@@ -169,20 +169,33 @@ def scan_camera(camera: str, after_date: str | None = None,
         )
 
         # Estimate fractional hours of actual coverage.
-        # Compare each video's size to the median to estimate duration.
-        # A full ~1hr video ≈ median size; a 5-min crash leftover ≈ small.
+        # Key insight: only the LAST video in each session can be cut short
+        # (by a crash). All earlier videos completed a full hour because the
+        # next video in the sequence started after them.
+        # File size varies by activity (46-130MB), NOT by duration.
+        from collections import defaultdict as _dd
+        session_vids: dict[str, list[dict]] = _dd(list)
+        for v in good_vids:
+            if 0 <= v["wall_hour"] < 24 and v["bytes"] > 0:
+                session_vids[v["session"]].append(v)
+
+        # Median size across all videos (for single-video sessions)
         good_sizes = [v["bytes"] for v in good_vids if v["bytes"] > 0]
-        if good_sizes:
-            median_bytes = sorted(good_sizes)[len(good_sizes) // 2]
-        else:
-            median_bytes = 75 * 1_048_576  # fallback 75MB
+        median_bytes = sorted(good_sizes)[len(good_sizes) // 2] if good_sizes else 75 * 1_048_576
 
         fractional_hours = 0.0
-        for v in good_vids:
-            if v["bytes"] <= 0 or v["wall_hour"] < 0 or v["wall_hour"] >= 24:
-                continue
-            est_minutes = min(60, max(1, (v["bytes"] / median_bytes) * 60))
-            fractional_hours += est_minutes / 60
+        for sess_vids in session_vids.values():
+            sess_vids.sort(key=lambda v: v["index"])
+            # All videos except the last completed a full hour
+            fractional_hours += max(0, len(sess_vids) - 1)
+            # Last video: estimate from size ratio
+            last = sess_vids[-1]
+            if len(sess_vids) >= 2:
+                others_avg = sum(v["bytes"] for v in sess_vids[:-1]) / (len(sess_vids) - 1)
+            else:
+                others_avg = median_bytes
+            ratio = last["bytes"] / others_avg if others_avg > 0 else 1.0
+            fractional_hours += min(1.0, max(0.02, ratio))
 
         results[date_str] = {
             "sessions": len(dates[date_str]),
@@ -398,7 +411,7 @@ def compute_day_summary(cam_data: dict[str, dict]) -> dict:
 
     # All cameras have full coverage?
     all_healthy = all(
-        cam_data.get(c, {}).get("hours_count", 0) == EXPECTED_VIDEOS_PER_DAY
+        cam_data.get(c, {}).get("hours_count", 0) >= 23
         and cam_data.get(c, {}).get("sessions", 0) == 1
         for c in CAMERAS
     )
