@@ -567,9 +567,14 @@ def main():
 
     new_dates = 0
     for date_str in sorted(all_dates):
-        cam_entries = {}
+        # Start from existing data for this date (preserves recording data
+        # for dates outside the incremental recording scan window)
+        existing_day = data.get("dates", {}).get(date_str, {})
+        cam_entries = dict(existing_day.get("cameras", {}))
+
         for camera in CAMERAS:
             if date_str in all_cam_data[camera]:
+                # Fresh recording scan — use it (overwrites stale data)
                 entry = all_cam_data[camera][date_str]
                 entry["flags"] = compute_flags(entry)
                 cam_entries[camera] = entry
@@ -577,11 +582,8 @@ def main():
             # Merge inference data
             if date_str in all_inf_data.get(camera, {}):
                 inf = all_inf_data[camera][date_str]
-                if camera in cam_entries:
-                    cam_entries[camera]["inference"] = inf
-                else:
-                    cam_entries.setdefault(camera, {})
-                    cam_entries[camera]["inference"] = inf
+                cam_entries.setdefault(camera, {})
+                cam_entries[camera]["inference"] = inf
 
         summary = compute_day_summary(cam_entries)
 
