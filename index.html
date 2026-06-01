@@ -336,6 +336,93 @@ header h1 span { color: var(--text-dim); font-weight: 400; }
   color: var(--text-dim);
 }
 
+/* Urgent inference panel */
+.urgent-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.urgent-panel h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.urgent-panel .urgent-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.urgent-cam-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.urgent-cam-row .cam-label {
+  min-width: 80px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.urgent-bar-track {
+  flex: 1;
+  height: 20px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+
+.urgent-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.urgent-bar-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+
+.urgent-stats {
+  min-width: 120px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.urgent-total {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 /* Detail panel */
 .detail-panel {
   background: var(--surface);
@@ -826,6 +913,8 @@ canvas {
     </div>
   </div>
 
+  <div class="urgent-panel" id="urgent-panel" style="display:none;"></div>
+
   <div class="detail-panel" id="detail-panel">
     <div class="detail-header">
       <h2><span id="detail-date"></span> <span id="detail-badge"></span></h2>
@@ -903,6 +992,7 @@ function render() {
   renderHeader();
   renderSummary();
   renderCalendar();
+  renderUrgentInference();
   renderTrend();
 }
 
@@ -1024,6 +1114,72 @@ function renderSummary() {
       <div class="sub">Expected ${(sortedDates.length * 4).toLocaleString()} (${Math.round(totalSessions / (sortedDates.length * 4))}x excess)</div>
     </div>
   `;
+}
+
+function renderUrgentInference() {
+  const panel = document.getElementById('urgent-panel');
+  // Urgent job: cam_01 + cam_03, May 15 – Jun 7
+  const CAMS = ['cam_01', 'cam_03'];
+  const CAM_LABELS = { cam_01: 'Cam 1 (Tau)', cam_03: 'Cam 2 (WT)' };
+  const START = '2026-05-15', END = '2026-06-07';
+
+  const camStats = {};
+  let totalRec = 0, totalInf = 0;
+  for (const cam of CAMS) camStats[cam] = { rec: 0, inf: 0 };
+
+  for (const [ds, day] of Object.entries(DATA.dates || {})) {
+    if (ds < START || ds > END) continue;
+    for (const cam of CAMS) {
+      const c = (day.cameras || {})[cam] || {};
+      const rec = c.videos || 0;
+      const inf = (c.inference || {}).videos_done || 0;
+      camStats[cam].rec += rec;
+      camStats[cam].inf += inf;
+      totalRec += rec;
+      totalInf += inf;
+    }
+  }
+
+  if (totalRec === 0) { panel.style.display = 'none'; return; }
+
+  const totalPct = (totalInf / totalRec * 100);
+  const remaining = totalRec - totalInf;
+  const isDone = remaining === 0;
+  const badgeColor = isDone ? 'background:var(--green-bg);color:var(--green)' :
+                     totalPct > 80 ? 'background:#3d2e00;color:var(--yellow)' :
+                     'background:var(--red-bg);color:var(--red)';
+  const badgeText = isDone ? 'COMPLETE' : 'IN PROGRESS';
+
+  let html = `<h2>Urgent Inference Job <span class="urgent-badge" style="${badgeColor}">${badgeText}</span></h2>`;
+  html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">May 15 – Jun 7, 2026 &middot; Physical Cam 1 + Cam 2 (cam_01 + cam_03 on disk)</div>`;
+
+  for (const cam of CAMS) {
+    const { rec, inf } = camStats[cam];
+    const pct = rec > 0 ? (inf / rec * 100) : 0;
+    const barColor = pct >= 100 ? 'var(--green)' : pct > 50 ? 'var(--blue)' : 'var(--yellow)';
+    html += `
+      <div class="urgent-cam-row">
+        <span class="cam-label">${CAM_LABELS[cam]}</span>
+        <div class="urgent-bar-track">
+          <div class="urgent-bar-fill" style="width:${Math.min(pct,100)}%;background:${barColor}"></div>
+          <div class="urgent-bar-text">${pct.toFixed(1)}%</div>
+        </div>
+        <span class="urgent-stats">${inf} / ${rec} videos</span>
+      </div>`;
+  }
+
+  html += `
+    <div class="urgent-total">
+      <span>Total:</span>
+      <div class="urgent-bar-track" style="flex:1">
+        <div class="urgent-bar-fill" style="width:${Math.min(totalPct,100)}%;background:${isDone ? 'var(--green)' : 'var(--blue)'}"></div>
+        <div class="urgent-bar-text">${totalPct.toFixed(1)}% — ${totalInf} / ${totalRec}</div>
+      </div>
+      <span class="urgent-stats">${remaining} remaining</span>
+    </div>`;
+
+  panel.innerHTML = html;
+  panel.style.display = 'block';
 }
 
 function renderCalendar() {
