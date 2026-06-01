@@ -320,34 +320,45 @@ def get_inference_skip_dates(data: dict) -> dict[str, set[str]]:
 
 
 def get_inference_totals() -> dict:
-    """Read inference totals from GPU dashboard JSONL logs.
+    """Count actual .mp4 and .predictions.slp files per camera.
 
-    These logs have accurate videos_done/videos_total per camera,
-    unlike our own scan which may miss dates.
+    Previous approach read stale JSONL logs from the forward worker,
+    which undercounted totals (missed new recordings) and overcounted
+    done (stale counter). File counting is slower but accurate.
     """
     totals = {}
     for camera in CAMERAS:
-        log_file = INFERENCE_LOG_DIR / f"{camera}_progress.jsonl"
-        if not log_file.exists():
+        rec_dir = DATA_ROOT / camera
+        inf_dir = INFERENCE_ROOT / camera
+        if not rec_dir.exists():
             continue
-        try:
-            with open(log_file) as f:
-                lines = f.readlines()
-            # Read last valid JSON entry
-            for line in reversed(lines):
-                try:
-                    d = json.loads(line.strip())
-                    totals[camera] = {
-                        "videos_done": d.get("videos_done", 0),
-                        "videos_total": d.get("videos_total", 0),
-                        "sessions_done": d.get("sessions_done", 0),
-                        "sessions_total": d.get("sessions_total", 0),
-                    }
-                    break
-                except (json.JSONDecodeError, KeyError):
+        # Count .mp4 files in recording dir
+        videos_total = 0
+        sessions_total = 0
+        for sess in rec_dir.iterdir():
+            if not sess.is_dir():
+                continue
+            n = sum(1 for f in sess.iterdir() if f.suffix == ".mp4")
+            if n > 0:
+                videos_total += n
+                sessions_total += 1
+        # Count .predictions.slp in inference dir
+        videos_done = 0
+        sessions_done = 0
+        if inf_dir.exists():
+            for sess in inf_dir.iterdir():
+                if not sess.is_dir():
                     continue
-        except OSError:
-            continue
+                n = sum(1 for f in sess.iterdir() if f.name.endswith(".predictions.slp"))
+                if n > 0:
+                    videos_done += n
+                    sessions_done += 1
+        totals[camera] = {
+            "videos_done": videos_done,
+            "videos_total": videos_total,
+            "sessions_done": sessions_done,
+            "sessions_total": sessions_total,
+        }
     return totals
 
 

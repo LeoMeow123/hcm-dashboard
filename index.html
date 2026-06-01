@@ -1285,6 +1285,7 @@ function renderInferenceOverview() {
   const CAM_ORDER = ['cam_01', 'cam_03', 'cam_04', 'cam_02'];
 
   // GPU worker layout + speeds (static config — update when assignments change)
+  // Speeds: exx ~3.8-4.1 v/h, lee-hcm ~7.1-7.4 v/h
   const WORKERS = {
     cam_01: [
       { machine: 'exx', gpu: 0, dir: 'fwd', label: 'Forward →', at: 'Sep 2025', vph: 3.8 },
@@ -1303,6 +1304,9 @@ function renderInferenceOverview() {
       { machine: 'lee-hcm', gpu: 3, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.3 },
     ],
   };
+  // Note: Overall progress now uses actual file counts (fixed Jun 1 2026).
+  // Previous log-based counts were stale: forward worker's JSONL didn't
+  // account for new recordings or reverse workers' contributions.
 
   // Compute totals
   let grandDone = 0, grandTotal = 0, grandRemaining = 0;
