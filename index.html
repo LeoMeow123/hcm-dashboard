@@ -423,6 +423,98 @@ header h1 span { color: var(--text-dim); font-weight: 400; }
   gap: 12px;
 }
 
+/* Inference overview panel */
+.inference-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.inference-panel h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.inf-camera-block {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.inf-camera-block:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+
+.inf-camera-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.inf-camera-header .cam-name {
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 120px;
+}
+
+.inf-camera-header .inf-pct {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.inf-bar-track {
+  height: 18px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.inf-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.inf-bar-text {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+
+.inf-workers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.inf-worker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+}
+
+.inf-worker .arrow { font-weight: bold; }
+.inf-worker .arrow.fwd { color: var(--green); }
+.inf-worker .arrow.rev { color: var(--red); }
+.inf-worker .machine { color: var(--text-dim); }
+.inf-worker .sess { color: var(--blue); font-family: monospace; font-size: 10px; }
+
 /* Detail panel */
 .detail-panel {
   background: var(--surface);
@@ -915,6 +1007,8 @@ canvas {
 
   <div class="urgent-panel" id="urgent-panel" style="display:none;"></div>
 
+  <div class="inference-panel" id="inference-panel"></div>
+
   <div class="detail-panel" id="detail-panel">
     <div class="detail-header">
       <h2><span id="detail-date"></span> <span id="detail-badge"></span></h2>
@@ -993,6 +1087,7 @@ function render() {
   renderSummary();
   renderCalendar();
   renderUrgentInference();
+  renderInferenceOverview();
   renderTrend();
 }
 
@@ -1180,6 +1275,71 @@ function renderUrgentInference() {
 
   panel.innerHTML = html;
   panel.style.display = 'block';
+}
+
+function renderInferenceOverview() {
+  const panel = document.getElementById('inference-panel');
+  const infCam = DATA.scan_info?.overall?.inference_per_camera || {};
+  const CAM_PHYSICAL = { cam_01: 'Cam 1', cam_03: 'Cam 2', cam_04: 'Cam 3', cam_02: 'Cam 4' };
+  const CAM_COHORT = { cam_01: 'Tau', cam_03: 'PD', cam_04: 'PD', cam_02: 'WT' };
+  const CAM_ORDER = ['cam_01', 'cam_03', 'cam_04', 'cam_02'];
+
+  // GPU worker layout (static config — update when assignments change)
+  const WORKERS = {
+    cam_01: [
+      { machine: 'exx', gpu: 0, dir: 'fwd', label: 'Forward →', at: 'Sep 2025' },
+      { machine: 'lee-hcm', gpu: 0, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
+      { machine: 'exx', gpu: 1, dir: 'rev', label: '← Rush', at: 'May 2026' },
+    ],
+    cam_02: [
+      { machine: 'lee-hcm', gpu: 1, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
+    ],
+    cam_03: [
+      { machine: 'exx', gpu: 2, dir: 'fwd', label: 'Forward →', at: 'Sep 2025' },
+      { machine: 'lee-hcm', gpu: 2, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
+      { machine: 'exx', gpu: 3, dir: 'rev', label: '← Rush', at: 'May 2026' },
+    ],
+    cam_04: [
+      { machine: 'lee-hcm', gpu: 3, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
+    ],
+  };
+
+  let html = '<h2>Inference Overview — 8 GPUs</h2>';
+
+  for (const cam of CAM_ORDER) {
+    const info = infCam[cam] || {};
+    const done = info.videos_done || 0;
+    const total = info.videos_total || 1;
+    const pct = Math.min(done / total * 100, 100);
+    const remaining = Math.max(0, total - done);
+    const barColor = pct >= 100 ? 'var(--green)' : pct > 90 ? 'var(--blue)' : pct > 50 ? 'var(--purple)' : 'var(--yellow)';
+    const workers = WORKERS[cam] || [];
+    const gpuCount = workers.length;
+
+    html += `
+      <div class="inf-camera-block">
+        <div class="inf-camera-header">
+          <span class="cam-name">${CAM_PHYSICAL[cam]} (${CAM_COHORT[cam]})</span>
+          <span class="inf-pct">${pct.toFixed(1)}% — ${done.toLocaleString()} / ${total.toLocaleString()} — ${remaining.toLocaleString()} remaining — ${gpuCount} GPU${gpuCount > 1 ? 's' : ''}</span>
+        </div>
+        <div class="inf-bar-track">
+          <div class="inf-bar-fill" style="width:${pct}%;background:${barColor}"></div>
+          <div class="inf-bar-text">${pct.toFixed(1)}%</div>
+        </div>
+        <div class="inf-workers">
+          ${workers.map(w => `
+            <div class="inf-worker">
+              <span class="arrow ${w.dir === 'fwd' ? 'fwd' : 'rev'}">${w.dir === 'fwd' ? '→' : '←'}</span>
+              <span>${w.label}</span>
+              <span class="machine">${w.machine} gpu${w.gpu}</span>
+              <span class="sess">@ ${w.at}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>`;
+  }
+
+  panel.innerHTML = html;
 }
 
 function renderCalendar() {
