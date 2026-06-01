@@ -1284,55 +1284,78 @@ function renderInferenceOverview() {
   const CAM_COHORT = { cam_01: 'Tau', cam_03: 'PD', cam_04: 'PD', cam_02: 'WT' };
   const CAM_ORDER = ['cam_01', 'cam_03', 'cam_04', 'cam_02'];
 
-  // GPU worker layout (static config — update when assignments change)
+  // GPU worker layout + speeds (static config — update when assignments change)
   const WORKERS = {
     cam_01: [
-      { machine: 'exx', gpu: 0, dir: 'fwd', label: 'Forward →', at: 'Sep 2025' },
-      { machine: 'lee-hcm', gpu: 0, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
-      { machine: 'exx', gpu: 1, dir: 'rev', label: '← Rush', at: 'May 2026' },
+      { machine: 'exx', gpu: 0, dir: 'fwd', label: 'Forward →', at: 'Sep 2025', vph: 3.8 },
+      { machine: 'lee-hcm', gpu: 0, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.4 },
+      { machine: 'exx', gpu: 1, dir: 'rev', label: '← Rush', at: 'May 2026', vph: 3.8 },
     ],
     cam_02: [
-      { machine: 'lee-hcm', gpu: 1, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
+      { machine: 'lee-hcm', gpu: 1, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.4 },
     ],
     cam_03: [
-      { machine: 'exx', gpu: 2, dir: 'fwd', label: 'Forward →', at: 'Sep 2025' },
-      { machine: 'lee-hcm', gpu: 2, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
-      { machine: 'exx', gpu: 3, dir: 'rev', label: '← Rush', at: 'May 2026' },
+      { machine: 'exx', gpu: 2, dir: 'fwd', label: 'Forward →', at: 'Sep 2025', vph: 4.1 },
+      { machine: 'lee-hcm', gpu: 2, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.1 },
+      { machine: 'exx', gpu: 3, dir: 'rev', label: '← Rush', at: 'May 2026', vph: 4.1 },
     ],
     cam_04: [
-      { machine: 'lee-hcm', gpu: 3, dir: 'rev', label: '← Reverse', at: 'Dec 2025' },
+      { machine: 'lee-hcm', gpu: 3, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.3 },
     ],
   };
 
-  let html = '<h2>Inference Overview — 8 GPUs</h2>';
-
-  for (const cam of CAM_ORDER) {
+  // Compute totals
+  let grandDone = 0, grandTotal = 0, grandRemaining = 0;
+  const camData = CAM_ORDER.map(cam => {
     const info = infCam[cam] || {};
     const done = info.videos_done || 0;
     const total = info.videos_total || 1;
-    const pct = Math.min(done / total * 100, 100);
     const remaining = Math.max(0, total - done);
-    const barColor = pct >= 100 ? 'var(--green)' : pct > 90 ? 'var(--blue)' : pct > 50 ? 'var(--purple)' : 'var(--yellow)';
     const workers = WORKERS[cam] || [];
-    const gpuCount = workers.length;
+    const combinedVph = workers.reduce((s, w) => s + w.vph, 0);
+    const etaHours = remaining > 0 && combinedVph > 0 ? remaining / combinedVph : 0;
+    grandDone += done; grandTotal += total; grandRemaining += remaining;
+    return { cam, done, total, remaining, workers, combinedVph, etaHours };
+  });
+
+  const grandPct = Math.min(grandDone / grandTotal * 100, 100);
+  const totalGpus = Object.values(WORKERS).reduce((s, w) => s + w.length, 0);
+
+  let html = `<h2>Inference Overview — ${totalGpus} GPUs across 2 machines</h2>`;
+  html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:16px;">
+    Overall: ${grandDone.toLocaleString()} / ${grandTotal.toLocaleString()} (${grandPct.toFixed(1)}%) — ${grandRemaining.toLocaleString()} remaining
+  </div>`;
+
+  for (const c of camData) {
+    const pct = Math.min(c.done / c.total * 100, 100);
+    const barColor = pct >= 100 ? 'var(--green)' : pct > 90 ? 'var(--blue)' : pct > 50 ? 'var(--purple)' : 'var(--yellow)';
+    const etaStr = c.remaining === 0 ? 'DONE' :
+      c.etaHours < 48 ? `~${Math.ceil(c.etaHours)}h` :
+      `~${(c.etaHours / 24).toFixed(1)}d`;
+    const etaColor = c.remaining === 0 ? 'var(--green)' : c.etaHours < 72 ? 'var(--blue)' : 'var(--yellow)';
 
     html += `
       <div class="inf-camera-block">
         <div class="inf-camera-header">
-          <span class="cam-name">${CAM_PHYSICAL[cam]} (${CAM_COHORT[cam]})</span>
-          <span class="inf-pct">${pct.toFixed(1)}% — ${done.toLocaleString()} / ${total.toLocaleString()} — ${remaining.toLocaleString()} remaining — ${gpuCount} GPU${gpuCount > 1 ? 's' : ''}</span>
+          <span class="cam-name">${CAM_PHYSICAL[c.cam]} (${CAM_COHORT[c.cam]})</span>
+          <span class="inf-pct">
+            ${pct.toFixed(1)}% — ${c.remaining.toLocaleString()} left —
+            ${c.workers.length} GPU${c.workers.length > 1 ? 's' : ''} @ ${c.combinedVph.toFixed(1)} v/h —
+            ETA: <span style="color:${etaColor};font-weight:600;">${etaStr}</span>
+          </span>
         </div>
         <div class="inf-bar-track">
           <div class="inf-bar-fill" style="width:${pct}%;background:${barColor}"></div>
-          <div class="inf-bar-text">${pct.toFixed(1)}%</div>
+          <div class="inf-bar-text">${c.done.toLocaleString()} / ${c.total.toLocaleString()}</div>
         </div>
         <div class="inf-workers">
-          ${workers.map(w => `
+          ${c.workers.map(w => `
             <div class="inf-worker">
               <span class="arrow ${w.dir === 'fwd' ? 'fwd' : 'rev'}">${w.dir === 'fwd' ? '→' : '←'}</span>
               <span>${w.label}</span>
               <span class="machine">${w.machine} gpu${w.gpu}</span>
               <span class="sess">@ ${w.at}</span>
+              <span style="color:var(--text-dim)">${w.vph} v/h</span>
             </div>
           `).join('')}
         </div>
