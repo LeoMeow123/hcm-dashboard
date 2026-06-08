@@ -952,11 +952,11 @@ canvas {
       <h2>Recording Calendar</h2>
       <div id="calendar"></div>
       <div class="calendar-legend">
-        <div class="legend-item"><div class="legend-swatch" style="background:var(--green)"></div> Healthy (24h all cams)</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#4d8a3f"></div> Mostly OK (18-23h)</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:var(--yellow)"></div> Partial (6-17h)</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:#d46a18"></div> Poor (&lt;6h)</div>
-        <div class="legend-item"><div class="legend-swatch" style="background:var(--red)"></div> Crash storm (50+ sessions)</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--green)"></div> 22-24h</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4d8a3f"></div> 16-21h</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:var(--yellow)"></div> 10-15h</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#d46a18"></div> &lt;10h</div>
+        <div class="legend-item"><div class="legend-swatch" style="background:#4a1a1a"></div> 0h</div>
         <div class="legend-item"><div class="legend-swatch" style="background:var(--border)"></div> No data</div>
         <div class="legend-item"><div class="legend-swatch" style="background:var(--purple);width:8px;height:8px;border-radius:50%"></div> Inference done</div>
       </div>
@@ -1440,11 +1440,11 @@ function renderCalendar() {
       const maxSessions = summary.max_sessions_any_cam;
 
       let cls = 'no-data';
-      if (maxSessions > 50) cls = 'crash-storm';
-      else if (summary.status === 'healthy') cls = 'healthy';
-      else if (avgHours >= 18) cls = 'degraded-light';
-      else if (avgHours >= 6) cls = 'degraded-medium';
-      else cls = 'degraded-heavy';
+      if (avgHours >= 22) cls = 'healthy';
+      else if (avgHours >= 16) cls = 'degraded-light';
+      else if (avgHours >= 10) cls = 'degraded-medium';
+      else if (avgHours > 0) cls = 'degraded-heavy';
+      else cls = 'missing';
 
       const inf = summary.inference || {};
       const infComplete = inf.complete;
