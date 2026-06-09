@@ -80,11 +80,13 @@ Everything runs automatically via cron on exx:
 | Time | Job | What |
 |------|-----|------|
 | 3:00 AM | Robocopy (Windows) | Recording PC copies new data to VAST |
-| 6:03 AM | `update_dashboard.sh` | Scan VAST + generate thumbnails + composite image + git push |
+| 8:00 AM | `update_dashboard.sh` | Scan VAST + generate thumbnails + composite image + git push |
 | 8:00 AM | GPU `slack_status.sh` | GPU status report to Slack (weekdays) |
-| 8:05 AM | `slack_hcm_report.sh` | HCM recording health + visual timeline to Slack |
+| 8:20 AM | `slack_hcm_report.sh` | HCM recording health + visual timeline to Slack (early) |
+| 10:00 AM | `update_dashboard.sh` | Rescan VAST + push (catches late robocopy transfers) |
+| 10:20 AM | `slack_hcm_report.sh` | HCM recording health + visual timeline to Slack (final) |
 
-### update_dashboard.sh (6:03 AM daily)
+### update_dashboard.sh (8:00 AM + 10:00 AM daily)
 
 1. Runs `scan_daily.py` (incremental scan, ~5 seconds)
 2. Generates thumbnails for last 30 days (`gen_thumbs.py --days 30 --incremental`)
@@ -92,7 +94,7 @@ Everything runs automatically via cron on exx:
 4. Manages 30-day sliding window of thumbnails in git
 5. Commits and pushes to GitHub Pages
 
-### slack_hcm_report.sh (8:05 AM daily)
+### slack_hcm_report.sh (8:20 AM + 10:20 AM daily)
 
 Posts to Slack via webhook:
 - Recording health for the latest **complete** day (skips the partial robocopy day)
