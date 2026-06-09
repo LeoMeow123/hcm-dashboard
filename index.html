@@ -1281,27 +1281,25 @@ function renderInferenceOverview() {
   const panel = document.getElementById('inference-panel');
   const infCam = DATA.scan_info?.overall?.inference_per_camera || {};
   const CAM_PHYSICAL = { cam_01: 'Cam 1', cam_03: 'Cam 2', cam_04: 'Cam 3', cam_02: 'Cam 4' };
-  const CAM_COHORT = { cam_01: 'Tau', cam_03: 'PD', cam_04: 'PD', cam_02: 'WT' };
+  const CAM_COHORT = { cam_01: 'Tau', cam_03: 'WT', cam_04: 'PD', cam_02: 'PD' };
   const CAM_ORDER = ['cam_01', 'cam_03', 'cam_04', 'cam_02'];
 
   // GPU worker layout + speeds (static config — update when assignments change)
   // Speeds: exx ~3.8-4.1 v/h, lee-hcm ~7.1-7.4 v/h
   const WORKERS = {
     cam_01: [
-      { machine: 'exx', gpu: 0, dir: 'fwd', label: 'Forward →', at: 'Sep 2025', vph: 3.8 },
-      { machine: 'lee-hcm', gpu: 0, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.4 },
-      { machine: 'exx', gpu: 1, dir: 'rev', label: '← Rush', at: 'May 2026', vph: 3.8 },
+      // cam_01 reverse FINISHED — no active workers
     ],
     cam_02: [
-      { machine: 'lee-hcm', gpu: 1, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.4 },
+      { machine: 'exx', gpu: 0, dir: 'fwd', label: 'Rush →', at: 'May 2026', vph: 4.0 },
+      { machine: 'exx', gpu: 1, dir: 'rev', label: '← Reverse', at: 'Sep 2025', vph: 7.8 },
     ],
     cam_03: [
-      { machine: 'exx', gpu: 2, dir: 'fwd', label: 'Forward →', at: 'Sep 2025', vph: 4.1 },
-      { machine: 'lee-hcm', gpu: 2, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.1 },
-      { machine: 'exx', gpu: 3, dir: 'rev', label: '← Rush', at: 'May 2026', vph: 4.1 },
+      // cam_03 reverse FINISHED — no active workers
     ],
     cam_04: [
-      { machine: 'lee-hcm', gpu: 3, dir: 'rev', label: '← Reverse', at: 'Dec 2025', vph: 7.3 },
+      { machine: 'exx', gpu: 2, dir: 'fwd', label: 'Rush →', at: 'May 2026', vph: 4.0 },
+      { machine: 'exx', gpu: 3, dir: 'rev', label: '← Reverse', at: 'Sep 2025', vph: 7.8 },
     ],
   };
   // Note: Overall progress now uses actual file counts (fixed Jun 1 2026).
