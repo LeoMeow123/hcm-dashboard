@@ -8,8 +8,9 @@
 #   bash slack_hcm_report.sh          # send to Slack
 #   bash slack_hcm_report.sh --dry    # print to terminal only
 #
-# Cron (daily 8:05am, after update_dashboard.sh at 6:03):
-#   5 8 * * * /home/exx/vast/leo/vibing/hcm-monitor/slack_hcm_report.sh >> /home/exx/vast/leo/vibing/hcm-monitor/slack_report.log 2>&1
+# Cron (daily 8:20am and 10:20am, after update_dashboard.sh at 8:00/10:00):
+#   20 8 * * * /home/exx/vast/leo/vibing/hcm-monitor/slack_hcm_report.sh >> /home/exx/vast/leo/vibing/hcm-monitor/slack_report.log 2>&1
+#   20 10 * * * /home/exx/vast/leo/vibing/hcm-monitor/slack_hcm_report.sh >> /home/exx/vast/leo/vibing/hcm-monitor/slack_report.log 2>&1
 
 set -euo pipefail
 
@@ -95,6 +96,36 @@ inf_done = overall.get("inference_videos_done", 0)
 inf_total = overall.get("inference_videos_total", 1)
 inf_pct = inf_done / inf_total * 100 if inf_total > 0 else 0
 
+# Urgent inference job: cam_01 + cam_03 (Cam 1 + Cam 2), May 15 – Jun 7
+urgent_cams = ["cam_01", "cam_03"]
+urgent_start, urgent_end = "2026-05-15", "2026-06-07"
+cam_physical = {"cam_01": "Cam 1", "cam_03": "Cam 2"}
+u_rec = {c: 0 for c in urgent_cams}
+u_inf = {c: 0 for c in urgent_cams}
+for d_str, d_data in data["dates"].items():
+    if d_str < urgent_start or d_str > urgent_end:
+        continue
+    for uc in urgent_cams:
+        cc = d_data.get("cameras", {}).get(uc, {})
+        u_rec[uc] += cc.get("videos", 0)
+        u_inf[uc] += cc.get("inference", {}).get("videos_done", 0)
+u_total_rec = sum(u_rec.values())
+u_total_inf = sum(u_inf.values())
+urgent_lines = []
+if u_total_rec > 0:
+    u_pct = u_total_inf / u_total_rec * 100
+    u_remaining = u_total_rec - u_total_inf
+    bar_len = 15
+    for uc in urgent_cams:
+        r, i = u_rec[uc], u_inf[uc]
+        p = i / r * 100 if r > 0 else 0
+        fl = int(p / 100 * bar_len)
+        b = "\u2588" * fl + "\u2591" * (bar_len - fl)
+        urgent_lines.append(f"   {cam_physical[uc]}: `{b}` {p:.1f}% ({i}/{r})")
+    fl_t = int(u_pct / 100 * bar_len)
+    bt = "\u2588" * fl_t + "\u2591" * (bar_len - fl_t)
+    urgent_lines.append(f"   *Total: `{bt}` {u_pct:.1f}% ({u_total_inf}/{u_total_rec}) - {u_remaining} remaining*")
+
 text_lines = [
     f":house: *HCM Recording Health - {report_date}*",
     "",
@@ -106,6 +137,8 @@ text_lines = [
     "",
     f":microscope: *Inference:* {inf_done:,}/{inf_total:,} ({inf_pct:.1f}%)",
 ]
+if urgent_lines:
+    text_lines += ["", ":rotating_light: *Urgent Inference (May 15 - Jun 7, Cam 1 + Cam 2)*"] + urgent_lines
 text = "\n".join(text_lines)
 
 # Build Block Kit payload with image

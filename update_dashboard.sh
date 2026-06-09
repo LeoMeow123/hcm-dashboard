@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# HCM Dashboard daily update — run via cron at 6AM
+# HCM Dashboard daily update — run via cron at 8AM and 10AM
 # Scans VAST for new recordings, generates thumbnails, pushes to GitHub.
 #
-# Crontab entry:
-#   3 6 * * * /home/exx/vast/leo/vibing/hcm-monitor/update_dashboard.sh >> /home/exx/vast/leo/vibing/hcm-monitor/update.log 2>&1
+# Crontab entries:
+#   0 8 * * * /home/exx/vast/leo/vibing/hcm-monitor/update_dashboard.sh >> /home/exx/vast/leo/vibing/hcm-monitor/update.log 2>&1
+#   0 10 * * * /home/exx/vast/leo/vibing/hcm-monitor/update_dashboard.sh >> /home/exx/vast/leo/vibing/hcm-monitor/update.log 2>&1
 
 set -euo pipefail
+
+# Cron has a minimal PATH — add user binaries (uv, etc.)
+export PATH="$HOME/.local/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -20,9 +24,9 @@ python3 scan_daily.py
 echo "[2/5] Generating thumbnails..."
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless gen_thumbs.py --days 30 --incremental
 
-# 3. Generate composite visual timeline for latest date (used by Slack report)
+# 3. Generate composite for latest COMPLETE date (skip partial robocopy day)
 echo "[3/6] Generating composite..."
-LATEST_DATE=$(python3 -c "import json;d=json.load(open('hcm_daily_status.json'));print(sorted(d['dates'].keys())[-1])")
+LATEST_DATE=$(python3 -c "import json;d=json.load(open('hcm_daily_status.json'));s=sorted(d['dates'].keys());print(s[-2] if len(s)>=2 else s[-1])")
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless --with numpy \
     gen_composite.py --date "$LATEST_DATE" --output composite_latest.jpg
 
