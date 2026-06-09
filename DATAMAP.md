@@ -152,13 +152,13 @@ Each session folder contains `cam_XX.NN.predictions.slp` files.
 
 | Camera | Videos Done | Videos Total | Progress |
 |--------|-------------|--------------|----------|
-| cam_01 (Phys Cam 1) | 11,584 | 15,935 | 72.7% |
-| cam_02 (Phys Cam 4) | 11,816 | 16,009 | 73.8% |
-| cam_03 (Phys Cam 2) | 11,664 | 15,995 | 72.9% |
-| cam_04 (Phys Cam 3) | 11,666 | 15,958 | 73.1% |
-| **Total** | **46,730** | **63,897** | **73.1%** |
+| cam_01 — Cam 1 (Tau) | 18,540 | 18,781 | 98.7% |
+| cam_02 — Cam 4 (PD) | 17,372 | 18,858 | 92.1% |
+| cam_03 — Cam 2 (WT) | 18,568 | 18,841 | 98.6% |
+| cam_04 — Cam 3 (PD) | 17,204 | 18,725 | 91.9% |
+| **Total** | **71,684** | **75,205** | **95.3%** |
 
-Running on exx + 2 helper workstations.
+Running on exx (4 GPUs: rush + reverse workers).
 
 Inference progress tracked in JSONL logs at:
 ```

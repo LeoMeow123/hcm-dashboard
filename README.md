@@ -19,10 +19,10 @@ Nobody notices these problems until weeks later when analysis fails. This dashbo
 
 | Metric | Value |
 |--------|-------|
-| Recording period | 2024-09-24 to present (~500 days) |
-| Inference progress | **73.1%** (46,730 / 63,897 videos) |
+| Recording period | 2024-09-24 to present (~521 days) |
+| Inference progress | **95.3%** (71,684 / 75,205 videos) |
 | Healthy days | 58 |
-| Degraded days | 438 |
+| Degraded days | 462 |
 
 ## Camera Wiring Mismatch
 
@@ -171,7 +171,7 @@ Static HTML dashboard that reads `hcm_daily_status.json`:
 
 ### 5. Slack Integration
 
-- **Daily report** (`slack_hcm_report.sh`): recording health + composite image at 8:05 AM
+- **Daily report** (`slack_hcm_report.sh`): recording health + composite image at 8:20 AM + 10:20 AM
 - **Slash command** (`/hcm-status`): on-demand status via existing GPU Slack bot
 - Secrets stored in `.slack_config` (gitignored)
 
