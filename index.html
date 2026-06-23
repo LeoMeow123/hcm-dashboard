@@ -986,7 +986,7 @@ canvas {
         <div class="cam-line">Cam 1: <span class="tag tag-empty">Empty</span></div>
         <div class="cam-line">Cam 2: <span class="tag tag-empty">Empty</span></div>
         <div class="cam-line">Cam 3: <span class="tag tag-pd">PD</span></div>
-        <div class="cam-line">Cam 4: <span class="tag tag-pd">PD</span></div>
+        <div class="cam-line">Cam 4: <span class="tag tag-pd">WT-PD</span></div>
       </div>
 
       <div class="event-phase" style="border-color:#8e44ad">
@@ -995,7 +995,7 @@ canvas {
         <div class="cam-line">Cam 1: <span class="tag tag-tau">Tau</span></div>
         <div class="cam-line">Cam 2: <span class="tag tag-wt">WT</span></div>
         <div class="cam-line">Cam 3: <span class="tag tag-pd">PD</span></div>
-        <div class="cam-line">Cam 4: <span class="tag tag-pd">PD</span></div>
+        <div class="cam-line">Cam 4: <span class="tag tag-pd">WT-PD</span></div>
       </div>
 
       <div style="font-size:10px;color:var(--text-dim);margin-top:12px;line-height:1.4">
@@ -1281,7 +1281,7 @@ function renderInferenceOverview() {
   const panel = document.getElementById('inference-panel');
   const infCam = DATA.scan_info?.overall?.inference_per_camera || {};
   const CAM_PHYSICAL = { cam_01: 'Cam 1', cam_03: 'Cam 2', cam_04: 'Cam 3', cam_02: 'Cam 4' };
-  const CAM_COHORT = { cam_01: 'Tau', cam_03: 'WT', cam_04: 'PD', cam_02: 'PD' };
+  const CAM_COHORT = { cam_01: 'Tau', cam_03: 'WT', cam_04: 'PD', cam_02: 'WT-PD' };
   const CAM_ORDER = ['cam_01', 'cam_03', 'cam_04', 'cam_02'];
 
   // GPU worker layout + speeds (static config — update when assignments change)
