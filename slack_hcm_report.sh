@@ -96,6 +96,10 @@ inf_done = overall.get("inference_videos_done", 0)
 inf_total = overall.get("inference_videos_total", 1)
 inf_pct = inf_done / inf_total * 100 if inf_total > 0 else 0
 
+roi_done = overall.get("roi_videos_done", 0)
+roi_total = overall.get("roi_videos_total", 0)
+roi_pct = roi_done / roi_total * 100 if roi_total > 0 else 0
+
 # Urgent inference job: cam_01 + cam_03 (Cam 1 + Cam 2), May 15 – Jun 7
 urgent_cams = ["cam_01", "cam_03"]
 urgent_start, urgent_end = "2026-05-15", "2026-06-07"
@@ -137,6 +141,8 @@ text_lines = [
     "",
     f":microscope: *Inference:* {inf_done:,}/{inf_total:,} ({inf_pct:.1f}%)",
 ]
+if roi_total > 0:
+    text_lines.append(f":jigsaw: *ROI Backfill:* {roi_done:,}/{roi_total:,} ({roi_pct:.1f}%)")
 if urgent_lines:
     text_lines += ["", ":rotating_light: *Urgent Inference (May 15 - Jun 7, Cam 1 + Cam 2)*"] + urgent_lines
 text = "\n".join(text_lines)

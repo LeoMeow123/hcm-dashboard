@@ -31,6 +31,7 @@ from pathlib import Path
 
 DATA_ROOT = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")
 INFERENCE_ROOT = Path("/home/exx/vast/leo/datasets/inference-Kuo-Fen-HCM")
+ROI_LOG_DIR = Path("/home/exx/vast/leo/datasets/roi-Kuo-Fen-HCM")
 INFERENCE_LOG_DIR = Path("/home/exx/vast/leo/2026-01-28-HCM-APP/scratch/2026-02-26-inference-benchmark/inference_log")
 CAMERAS = ["cam_01", "cam_02", "cam_03", "cam_04"]
 OUTPUT_FILE = Path(__file__).parent / "hcm_daily_status.json"
@@ -317,6 +318,44 @@ def get_inference_skip_dates(data: dict) -> dict[str, set[str]]:
                 # Inference complete
                 cam_skip[cam].add(date_str)
     return cam_skip
+
+
+_ROI_LINE = re.compile(r"(cam_\d+)\s+(\d+)/(\d+)\s+ok=(\d+)\s+err=(\d+)\s+([\d.]+)\s+vid/s\s+ETA\s+([\d.]+)")
+
+
+def get_roi_totals() -> dict:
+    """ROI backfill progress from the worker log TAILS (fast; no tree scan).
+
+    The ROI source tree is ~14k session dirs/cam over CIFS — far too slow to walk
+    each scan. Each cam is split across two date-range workers sharing one log, so
+    keep the latest line per distinct denominator and sum. Mirrors the GPU agent.
+    """
+    out = {}
+    if not ROI_LOG_DIR.is_dir():
+        return out
+    for lp in sorted(ROI_LOG_DIR.glob("_log_cam_*.log")):
+        cam = lp.name.replace("_log_", "").replace(".log", "")
+        try:
+            tail = lp.read_text(errors="ignore").splitlines()[-80:]
+        except OSError:
+            continue
+        latest = {}
+        for ln in tail:
+            m = _ROI_LINE.search(ln)
+            if m:
+                latest[m.group(3)] = m
+        if not latest:
+            continue
+        done = total = errs = 0
+        rate = 0.0
+        for m in latest.values():
+            done += int(m.group(2))
+            total += int(m.group(3))
+            errs += int(m.group(5))
+            rate += float(m.group(6))
+        out[cam] = {"videos_done": done, "videos_total": total,
+                    "errors": errs, "rate_vps": round(rate, 2)}
+    return out
 
 
 def get_inference_totals() -> dict:
@@ -663,6 +702,12 @@ def main():
         if d["summary"].get("inference", {}).get("complete", False)
     )
 
+    # ROI backfill progress (from worker log tails — cheap, current cohort)
+    roi_totals = get_roi_totals()
+    roi_done = sum(t["videos_done"] for t in roi_totals.values())
+    roi_total = sum(t["videos_total"] for t in roi_totals.values())
+    roi_rate = round(sum(t.get("rate_vps", 0) for t in roi_totals.values()), 2)
+
     data["scan_info"]["overall"] = {
         "healthy_days": total_healthy,
         "degraded_days": total_degraded,
@@ -671,6 +716,10 @@ def main():
         "inference_videos_done": total_inf_videos,
         "inference_videos_total": total_rec_videos,
         "inference_per_camera": {cam: inf_totals.get(cam, {}) for cam in CAMERAS},
+        "roi_videos_done": roi_done,
+        "roi_videos_total": roi_total,
+        "roi_rate_vps": roi_rate,
+        "roi_per_camera": roi_totals,
     }
     data["scan_info"]["transfer"] = transfer
 

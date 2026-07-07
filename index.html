@@ -1166,6 +1166,17 @@ function renderSummary() {
   const infPct = (infDone / infTotal * 100).toFixed(1);
   const infDates = o.inference_complete_dates || 0;
 
+  const roiDone = o.roi_videos_done || 0;
+  const roiTotal = o.roi_videos_total || 0;
+  const roiPct = roiTotal ? (roiDone / roiTotal * 100).toFixed(1) : '0.0';
+  const roiCard = roiTotal ? `
+    <div class="summary-card">
+      <div class="label">ROI Backfill</div>
+      <div class="value" style="color:#2dd4bf">${roiPct}%</div>
+      <div class="sub">${roiDone.toLocaleString()} / ${roiTotal.toLocaleString()} videos</div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${roiPct}%;background:#2dd4bf"></div></div>
+    </div>` : '';
+
   document.getElementById('summary-bar').innerHTML = `
     <div class="summary-card">
       <div class="label">Recording Days</div>
@@ -1193,6 +1204,7 @@ function renderSummary() {
       <div class="sub">${infDone.toLocaleString()} / ${infTotal.toLocaleString()} videos</div>
       <div class="progress-bar"><div class="progress-fill" style="width:${infPct}%;background:var(--purple)"></div></div>
     </div>
+    ${roiCard}
     <div class="summary-card">
       <div class="label">Inference Complete</div>
       <div class="value purple">${infDates}</div>
