@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # slack_hcm_report.sh — Post daily HCM recording health + visual timeline to Slack
 #
-# Posts text summary + composite visual timeline image via webhook.
+# Posts text summary + composite visual timeline image via webhook. Reads the
+# schema-2 status JSON (both rigs; physical camera keys), reports the latest
+# complete day, today's hour count so far, rig heartbeat and SLEAP backlog.
 # The composite image is hosted on GitHub Pages (pushed by update_dashboard.sh).
 #
 # Usage:
@@ -34,120 +36,127 @@ dry_run = len(sys.argv) > 3 and sys.argv[3] == "--dry"
 with open(json_file) as f:
     data = json.load(f)
 
-# Camera wiring mismatch — see CAMERA_SWAP.md
-SOFTWARE_TO_PHYSICAL = {
-    "cam_01": "Cam 1", "cam_02": "Cam 4",
-    "cam_03": "Cam 2", "cam_04": "Cam 3",
-}
-CAM_ORDER = ["cam_01", "cam_03", "cam_04", "cam_02"]
-
-sorted_dates = sorted(data["dates"].keys())
+# Schema 2: cameras keyed by PHYSICAL cage on both rigs (scan_daily.py applies
+# CAMERA_SWAP.md to the old Bonsai data; frameforge cam_0N is cage N natively).
+CAMS = ["cam_01", "cam_02", "cam_03", "cam_04"]
+label = lambda c: f"Cam {int(c[-2:])}"
+si = data.get("scan_info", {})
+dates = data.get("dates", {})
+sorted_dates = sorted(dates)
 if not sorted_dates:
     print(json.dumps({"text": ":x: No HCM data available"}))
     sys.exit(0)
 
-# The latest date is always incomplete (~2-3 videos) because robocopy
-# runs at 3AM — only hours 00:00-03:00 are copied. Report the previous
-# day which has the full 24hr picture.
-if len(sorted_dates) >= 2:
-    report_date = sorted_dates[-2]
-    latest_date = sorted_dates[-1]
-else:
-    report_date = sorted_dates[-1]
-    latest_date = report_date
-
-day = data["dates"][report_date]
+# Report the latest COMPLETE day; today is still filling in hour by hour.
+complete = [d for d in sorted_dates if dates[d]["summary"].get("status") != "in_progress"]
+report_date = complete[-1] if complete else sorted_dates[-1]
+today_key = sorted_dates[-1] if dates[sorted_dates[-1]]["summary"].get("status") == "in_progress" else None
+day = dates[report_date]
 summary = day["summary"]
-transfer = data.get("scan_info", {}).get("transfer", {})
+rig = summary.get("rig") or "bonsai"
 
-# Transfer
-max_behind = max((info.get("days_behind") or 999) for info in transfer.values()) if transfer else 999
-if max_behind <= 1:
-    transfer_line = ":white_check_mark: Transfer OK"
-elif max_behind <= 3:
-    transfer_line = f":warning: Transfer delayed ({max_behind}d old)"
-else:
-    transfer_line = f":x: Transfer stale ({max_behind}d)!"
+# --- Rig / delivery (frameforge) -------------------------------------------
+hb = si.get("rig") or {}
+transfer = si.get("transfer") or {}
+rig_lines = []
+if hb:
+    hb_s = hb.get("status")
+    hb_icon = {"ok": ":white_check_mark:", "warn": ":warning:"}.get(hb_s, ":x:")
+    rig_lines.append(f"{hb_icon} Rig `{hb.get('host', '?')}` heartbeat {hb.get('age_min', '?')} min ago"
+                     + ("" if hb_s == "ok" else f" ({hb_s})"))
+    worst = max((t.get("minutes_behind") or 0) for t in transfer.values()) if transfer else None
+    statuses = {t.get("status") for t in transfer.values()}
+    if worst is not None:
+        if statuses <= {"ok"}:
+            latest = next(iter(transfer.values()))
+            rig_lines.append(f":white_check_mark: Hour files landing: newest {latest.get('latest_date')} "
+                             f"{latest.get('latest_hour', 0):02d}:00 on all cameras ({worst} min behind)")
+        else:
+            lag = ", ".join(f"{label(c)} {t.get('latest_date')} {(t.get('latest_hour') or 0):02d}:00 ({t.get('minutes_behind')} min)"
+                            for c, t in transfer.items() if t.get("status") != "ok")
+            icon = ":x:" if "stale" in statuses or "missing" in statuses else ":warning:"
+            rig_lines.append(f"{icon} Hour files behind: {lag}")
+else:  # old-rig fallback
+    max_behind = max((t.get("days_behind") or 999) for t in transfer.values()) if transfer else 999
+    rig_lines.append(":white_check_mark: Transfer OK" if max_behind <= 1 else
+                     f":warning: Transfer delayed ({max_behind}d old)" if max_behind <= 3 else
+                     f":x: Transfer stale ({max_behind}d)!")
 
-# Per-camera
+# --- Recording, latest complete day ----------------------------------------
 cam_lines = []
-for cam in CAM_ORDER:
-    label = SOFTWARE_TO_PHYSICAL[cam]
+for cam in CAMS:
     c = day.get("cameras", {}).get(cam)
     if not c or "videos" not in c:
-        cam_lines.append(f"   {label}: no data")
+        cam_lines.append(f"   :x: {label(cam)}: no data")
         continue
     flags = c.get("flags", [])
     icon = ":white_check_mark:" if "healthy" in flags else ":warning:" if c["videos"] > 0 else ":x:"
-    flag_str = ""
-    if "crash_storm" in flags: flag_str = " - :rotating_light: crash storm"
-    elif "crash_day" in flags: flag_str = " - crashes"
-    elif "incomplete" in flags: flag_str = " - incomplete"
-    cam_lines.append(
-        f"   {icon} {label}: {c['videos']} vid, {c['sessions']} sess, "
-        f"{c['hours_count']}/24h{flag_str}"
-    )
+    if c.get("rig") in ("frameforge", "mixed"):
+        notes = []
+        if c.get("hours_missing"): notes.append(f"missing h {','.join(str(h) for h in c['hours_missing'])}")
+        if c.get("gaps"): notes.append(f"{c['gaps']} frame gaps (max {c.get('max_gap_ms', 0):.0f} ms)")
+        if c.get("missing_h5"): notes.append(f"{c['missing_h5']} without .h5")
+        if "short_file" in flags: notes.append("short file")
+        if "rig_switch" in flags: notes.append("rig switch day")
+        cam_lines.append(f"   {icon} {label(cam)}: {c['videos']}/24 h files, {c['hours_count']:.1f} h recorded, "
+                         f"{c.get('frames', 0):,} frames" + (f" - {'; '.join(notes)}" if notes else ""))
+    else:
+        flag_str = (" - :rotating_light: crash storm" if "crash_storm" in flags else
+                    " - crashes" if "crash_day" in flags else " - incomplete" if "incomplete" in flags else "")
+        cam_lines.append(f"   {icon} {label(cam)}: {c['videos']} vid, {c['sessions']} sess, {c['hours_count']}/24h{flag_str}")
 
-status_emoji = {"healthy": ":large_green_circle:", "degraded": ":large_yellow_circle:", "missing": ":red_circle:"}
+status_emoji = {"healthy": ":large_green_circle:", "degraded": ":large_yellow_circle:", "missing": ":red_circle:",
+                "in_progress": ":large_blue_circle:"}
 day_status = summary.get("status", "unknown")
+if rig in ("frameforge", "mixed"):
+    total_line = (f"   *Total: {summary.get('hours_recorded', 0)}/96 camera-hours, {summary.get('frames', 0):,} frames, "
+                  f"{summary.get('gaps', 0)} gaps - {day_status}*")
+else:
+    total_line = f"   *Total: {summary['total_videos']} vid, {summary['total_sessions']} sess - {day_status}*"
 
-overall = data.get("scan_info", {}).get("overall", {})
-inf_done = overall.get("inference_videos_done", 0)
-inf_total = overall.get("inference_videos_total", 1)
-inf_pct = inf_done / inf_total * 100 if inf_total > 0 else 0
+# --- Today so far -------------------------------------------------------------
+today_lines = []
+if today_key:
+    t = dates[today_key]
+    exp = t["summary"].get("hours_expected", 0)
+    per = ", ".join(f"{label(c)} {t['cameras'].get(c, {}).get('videos', 0)}" for c in CAMS)
+    gaps = t["summary"].get("gaps", 0)
+    today_lines.append(f":hourglass_flowing_sand: *Today ({today_key}) so far:* {per} hour files "
+                       f"(clock at {exp}h){' - ' + str(gaps) + ' frame gaps' if gaps else ''}")
 
-roi_done = overall.get("roi_videos_done", 0)
-roi_total = overall.get("roi_videos_total", 0)
-roi_pct = roi_done / roi_total * 100 if roi_total > 0 else 0
+# --- SLEAP inference --------------------------------------------------------
+overall = si.get("overall", {})
+ff = overall.get("frameforge") or {}
+legacy = overall.get("legacy") or {}
+inf_lines = []
+if ff:
+    done, total, backlog = ff.get("videos_done", 0), ff.get("videos_total", 0), ff.get("backlog", 0)
+    alive = ff.get("workers_alive", 0)
+    spf = ff.get("sec_per_file")
+    icon = ":white_check_mark:" if alive == 4 and ff.get("keeping_up") else ":warning:"
+    inf_lines.append(f"{icon} *SLEAP (new rig):* {done:,}/{total:,} hour files, backlog {backlog}"
+                     f"{' (keeping up)' if ff.get('keeping_up') else ' (falling behind)'}, "
+                     f"workers {alive}/4 alive" + (f", ~{spf // 60} min/file" if spf else ""))
+    down = [label(c) for c, pc in ff.get("per_camera", {}).items() if not pc.get("worker", {}).get("alive")]
+    if down:
+        inf_lines.append(f"   :x: worker down: {', '.join(down)} - `tmux ls` on lee-hcm, relaunch run_frameforge.sh")
+    lagging = [(label(c), pc) for c, pc in ff.get("per_camera", {}).items() if pc.get("backlog", 0) > 1]
+    for lb, pc in lagging:
+        inf_lines.append(f"   :warning: {lb}: {pc['backlog']} behind (oldest {pc.get('backlog_oldest')}, ETA ~{pc.get('eta_hours')} h)")
+if legacy:
+    ld, lt = legacy.get("videos_done", 0), legacy.get("videos_total", 1)
+    inf_lines.append(f":file_cabinet: Old rig (Bonsai, to {legacy.get('last_date')}): {ld:,}/{lt:,} ({ld / max(lt, 1) * 100:.2f}%), frozen")
+roi_done, roi_total = overall.get("roi_videos_done", 0), overall.get("roi_videos_total", 0)
+if roi_total and roi_done < roi_total:
+    inf_lines.append(f":jigsaw: *ROI Backfill:* {roi_done:,}/{roi_total:,} ({roi_done / roi_total * 100:.1f}%)")
 
-# Urgent inference job: cam_01 + cam_03 (Cam 1 + Cam 2), May 15 – Jun 7
-urgent_cams = ["cam_01", "cam_03"]
-urgent_start, urgent_end = "2026-05-15", "2026-06-07"
-cam_physical = {"cam_01": "Cam 1", "cam_03": "Cam 2"}
-u_rec = {c: 0 for c in urgent_cams}
-u_inf = {c: 0 for c in urgent_cams}
-for d_str, d_data in data["dates"].items():
-    if d_str < urgent_start or d_str > urgent_end:
-        continue
-    for uc in urgent_cams:
-        cc = d_data.get("cameras", {}).get(uc, {})
-        u_rec[uc] += cc.get("videos", 0)
-        u_inf[uc] += cc.get("inference", {}).get("videos_done", 0)
-u_total_rec = sum(u_rec.values())
-u_total_inf = sum(u_inf.values())
-urgent_lines = []
-if u_total_rec > 0:
-    u_pct = u_total_inf / u_total_rec * 100
-    u_remaining = u_total_rec - u_total_inf
-    bar_len = 15
-    for uc in urgent_cams:
-        r, i = u_rec[uc], u_inf[uc]
-        p = i / r * 100 if r > 0 else 0
-        fl = int(p / 100 * bar_len)
-        b = "\u2588" * fl + "\u2591" * (bar_len - fl)
-        urgent_lines.append(f"   {cam_physical[uc]}: `{b}` {p:.1f}% ({i}/{r})")
-    fl_t = int(u_pct / 100 * bar_len)
-    bt = "\u2588" * fl_t + "\u2591" * (bar_len - fl_t)
-    urgent_lines.append(f"   *Total: `{bt}` {u_pct:.1f}% ({u_total_inf}/{u_total_rec}) - {u_remaining} remaining*")
-
-text_lines = [
-    f":house: *HCM Recording Health - {report_date}*",
-    "",
-    transfer_line,
-    "",
-    f"{status_emoji.get(day_status, '')} *Recording ({report_date}):*",
-] + cam_lines + [
-    f"   *Total: {summary['total_videos']} vid, {summary['total_sessions']} sess - {day_status}*",
-    "",
-    f":microscope: *Inference:* {inf_done:,}/{inf_total:,} ({inf_pct:.1f}%)",
-]
-if roi_total > 0:
-    text_lines.append(f":jigsaw: *ROI Backfill:* {roi_done:,}/{roi_total:,} ({roi_pct:.1f}%)")
-if urgent_lines:
-    text_lines += ["", ":rotating_light: *Urgent Inference (May 15 - Jun 7, Cam 1 + Cam 2)*"] + urgent_lines
+text_lines = [f":house: *HCM Recording Health - {report_date}*", ""] + rig_lines + [
+    "", f"{status_emoji.get(day_status, '')} *Recording ({report_date}, {rig} rig):*"] + cam_lines + [total_line]
+if today_lines:
+    text_lines += [""] + today_lines
+text_lines += [""] + inf_lines
 text = "\n".join(text_lines)
 
-# Build Block Kit payload with image
 blocks = [
     {"type": "section", "text": {"type": "mrkdwn", "text": text}},
     {
@@ -165,7 +174,6 @@ blocks = [
         }],
     },
 ]
-
 payload = {"text": text, "blocks": blocks}
 
 if dry_run:

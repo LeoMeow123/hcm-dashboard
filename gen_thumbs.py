@@ -2,165 +2,164 @@
 # /// script
 # dependencies = ["opencv-python-headless"]
 # ///
-"""Generate thumbnail images for HCM videos.
+"""Generate thumbnail images for HCM videos on both rigs.
 
-Extracts a single frame (10 seconds in) from each video and saves as
-a small JPEG. Thumbnails are stored in thumbs/{cam}/{session}/{index}.jpg
+Driven by hcm_daily_status.json (schema 2): every timeline entry is
+[wall_hour, session, index, mb, thumb_cam], and the thumbnail for it lives at
+thumbs/{thumb_cam}/{session}/{index:02d}.jpg. thumb_cam is the directory the video
+is in (Bonsai: swapped disk id; frameforge: physical id = cage) and session is the
+Bonsai recording-session folder or the frameforge day folder (YYYY-MM-DD-00-00-00).
+The dashboard, gen_composite.py and the Slack report resolve thumbs the same way.
 
 Usage:
-    uv run gen_thumbs.py                      # generate for all dates
-    uv run gen_thumbs.py --date 2024-12-01    # single date
-    uv run gen_thumbs.py --days 7             # last 7 days
-    uv run gen_thumbs.py --incremental        # skip existing thumbs
+    uv run gen_thumbs.py --days 30 --incremental   # daily cron
+    uv run gen_thumbs.py --date 2026-10-09
+    uv run gen_thumbs.py --latest                  # only the newest hour file per camera
 """
 
 import argparse
 import json
 import os
-import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
 
-DATA_ROOT = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")
-THUMB_DIR = Path(__file__).parent / "thumbs"
-CAMERAS = ["cam_01", "cam_02", "cam_03", "cam_04"]
-
-SESSION_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(\d{2})-(\d{2})-(\d{2})$")
-VIDEO_RE = re.compile(r"^(cam_\d{2})\.(\d{2})\.mp4$")
+SCRIPT_DIR = Path(__file__).parent
+JSON_FILE = SCRIPT_DIR / "hcm_daily_status.json"
+THUMB_DIR = SCRIPT_DIR / "thumbs"
+OLD_ROOT = Path("/home/exx/vast/lee/2024-09-24-LeeAPP")          # Bonsai (frozen)
+FF_ROOT = Path("/home/exx/vast/leo/frameforge")                   # frameforge
 
 THUMB_WIDTH = 320
 THUMB_QUALITY = 70
-SEEK_SEC = 10  # extract frame at 10 seconds in
+SEEK_SEC = 10  # extract the frame 10 s in (first keyframe interval on both rigs)
+TINY_BYTES = 1_000_000
 
 
 def extract_thumbnail(video_path: Path, thumb_path: Path) -> bool:
-    """Extract a single frame from a video and save as JPEG thumbnail."""
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         return False
-
     fps = cap.get(cv2.CAP_PROP_FPS) or 50
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # Seek to SEEK_SEC or middle of video if too short
     target_frame = min(int(fps * SEEK_SEC), max(total_frames // 2, 1))
     cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-
     ret, frame = cap.read()
     cap.release()
-
     if not ret or frame is None:
         return False
-
-    # Resize maintaining aspect ratio
     h, w = frame.shape[:2]
-    new_w = THUMB_WIDTH
-    new_h = int(h * new_w / w)
-    frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
+    frame = cv2.resize(frame, (THUMB_WIDTH, int(h * THUMB_WIDTH / w)), interpolation=cv2.INTER_AREA)
     thumb_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(thumb_path), frame, [cv2.IMWRITE_JPEG_QUALITY, THUMB_QUALITY])
     return True
 
 
-def get_dates_to_process(args) -> list[str]:
-    """Determine which dates to process based on args."""
-    if args.date:
-        return [args.date]
-
-    # Collect all dates from cam_01
-    dates = set()
-    cam_dir = DATA_ROOT / "cam_01"
-    for entry in os.listdir(cam_dir):
-        m = SESSION_RE.match(entry)
-        if m:
-            dates.add(m.group(1))
-
-    dates = sorted(dates)
-
-    if args.days:
-        from datetime import datetime, timedelta
-        cutoff = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
-        dates = [d for d in dates if d > cutoff]
-
-    return dates
+def _deployments() -> list[str]:
+    try:
+        return sorted(d for d in os.listdir(FF_ROOT) if len(d) == 10 and d[4] == "-" and (FF_ROOT / d).is_dir())
+    except OSError:
+        return []
 
 
-def process_date(date_str: str, incremental: bool = False) -> dict:
-    """Generate thumbnails for all videos on a given date."""
-    stats = {"generated": 0, "skipped": 0, "failed": 0, "total": 0}
+def resolve_video(entry: dict, thumb_cam: str, session: str, index: int) -> Path | None:
+    """Find the .mp4 behind a timeline entry on whichever rig it came from."""
+    rig = entry.get("rig", "bonsai")
+    name = f"{thumb_cam}.{index:02d}.mp4"
+    candidates = []
+    if rig in ("frameforge", "mixed"):
+        deps = [entry.get("deployment")] if entry.get("deployment") else []
+        ff_part = (entry.get("parts") or {}).get("frameforge") or {}
+        if ff_part.get("deployment") and ff_part["deployment"] not in deps:
+            deps.append(ff_part["deployment"])
+        deps += [d for d in _deployments() if d not in deps]
+        candidates += [FF_ROOT / d / thumb_cam / session / name for d in deps]
+    if rig in ("bonsai", "mixed"):
+        candidates.append(OLD_ROOT / thumb_cam / session / name)
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
 
-    for camera in CAMERAS:
-        cam_dir = DATA_ROOT / camera
-        if not cam_dir.is_dir():
-            continue
 
-        for entry in sorted(os.listdir(cam_dir)):
-            m = SESSION_RE.match(entry)
-            if not m or m.group(1) != date_str:
-                continue
-
-            session_dir = cam_dir / entry
-            try:
-                files = sorted(os.listdir(session_dir))
-            except OSError:
-                continue
-
-            for f in files:
-                vm = VIDEO_RE.match(f)
-                if not vm:
-                    continue
-
-                stats["total"] += 1
-                video_path = session_dir / f
-                # thumbs/cam_01/2024-12-01-00-01-05/00.jpg
-                thumb_path = THUMB_DIR / camera / entry / f"{vm.group(2)}.jpg"
-
-                if incremental and thumb_path.exists():
-                    stats["skipped"] += 1
-                    continue
-
-                # Skip tiny files (crash artifacts < 1MB)
-                if video_path.stat().st_size < 1_000_000:
-                    stats["skipped"] += 1
-                    continue
-
-                if extract_thumbnail(video_path, thumb_path):
-                    stats["generated"] += 1
-                else:
-                    stats["failed"] += 1
-
-    return stats
+def jobs_for_date(data: dict, date_str: str) -> list[tuple[Path, Path]]:
+    day = data["dates"].get(date_str)
+    if not day:
+        return []
+    jobs = []
+    for cam, entry in day.get("cameras", {}).items():
+        for t in entry.get("timeline", []):
+            session, index = t[1], int(t[2])
+            thumb_cam = t[4] if len(t) > 4 else entry.get("disk_cam", cam)
+            thumb = THUMB_DIR / thumb_cam / session / f"{index:02d}.jpg"
+            jobs.append((entry, thumb_cam, session, index, thumb))
+    return jobs
 
 
 def main():
     parser = argparse.ArgumentParser(description="HCM Thumbnail Generator")
     parser.add_argument("--date", help="Process a single date (YYYY-MM-DD)")
-    parser.add_argument("--days", type=int, help="Process last N days")
+    parser.add_argument("--days", type=int, help="Process the last N days")
+    parser.add_argument("--latest", action="store_true", help="Only the newest hour file per camera")
     parser.add_argument("--incremental", action="store_true", help="Skip existing thumbnails")
+    parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
-    dates = get_dates_to_process(args)
-    print(f"Processing {len(dates)} dates...")
+    with open(JSON_FILE) as f:
+        data = json.load(f)
 
-    total_stats = {"generated": 0, "skipped": 0, "failed": 0, "total": 0}
+    if args.latest:
+        jobs = []
+        for cam, lf in data.get("scan_info", {}).get("latest_frames", {}).items():
+            entry = data["dates"].get(lf["date"], {}).get("cameras", {}).get(cam, {"rig": "frameforge"})
+            jobs.append((entry, cam, lf["session"], int(lf["hour"]), SCRIPT_DIR / lf["thumb"]))
+        dates = []
+    else:
+        dates = sorted(data["dates"])
+        if args.date:
+            dates = [args.date]
+        elif args.days:
+            cutoff = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")
+            dates = [d for d in dates if d > cutoff]
+        jobs = [j for d in dates for j in jobs_for_date(data, d)]
+    print(f"{len(dates)} dates, {len(jobs)} videos")
 
-    for i, date_str in enumerate(dates):
-        stats = process_date(date_str, incremental=args.incremental)
-        for k in total_stats:
-            total_stats[k] += stats[k]
-        if stats["generated"] > 0 or (i + 1) % 10 == 0:
-            print(f"  [{i+1}/{len(dates)}] {date_str}: "
-                  f"+{stats['generated']} generated, {stats['skipped']} skipped, "
-                  f"{stats['failed']} failed")
+    stats = {"generated": 0, "skipped": 0, "failed": 0, "missing": 0}
+    todo = []
+    for entry, thumb_cam, session, index, thumb in jobs:
+        if args.incremental and thumb.exists():
+            stats["skipped"] += 1
+            continue
+        video = resolve_video(entry, thumb_cam, session, index)
+        if video is None:
+            stats["missing"] += 1
+            continue
+        try:
+            if video.stat().st_size < TINY_BYTES:
+                stats["skipped"] += 1
+                continue
+        except OSError:
+            stats["missing"] += 1
+            continue
+        todo.append((video, thumb))
 
-    print(f"\n--- Done ---")
-    print(f"Total: {total_stats['total']} videos")
-    print(f"Generated: {total_stats['generated']}")
-    print(f"Skipped: {total_stats['skipped']}")
-    print(f"Failed: {total_stats['failed']}")
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futs = {pool.submit(extract_thumbnail, v, t): (v, t) for v, t in todo}
+        for i, f in enumerate(as_completed(futs), 1):
+            ok = False
+            try:
+                ok = f.result()
+            except Exception as exc:
+                print(f"  ERROR {futs[f][0].name}: {exc}", file=sys.stderr)
+            stats["generated" if ok else "failed"] += 1
+            if i % 50 == 0:
+                print(f"  {i}/{len(todo)} ...")
+
+    print(f"--- Done --- generated {stats['generated']}, skipped {stats['skipped']}, "
+          f"failed {stats['failed']}, source missing {stats['missing']}")
 
 
 if __name__ == "__main__":

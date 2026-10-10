@@ -16,17 +16,18 @@ cd "$SCRIPT_DIR"
 
 echo "=== Dashboard update started: $(date '+%Y-%m-%d %H:%M:%S') ==="
 
-# 1. Scan VAST (incremental — only new dates + incomplete inference)
-echo "[1/5] Scanning VAST..."
-python3 scan_daily.py
+# 1. Scan VAST (incremental: new dates + last 3 days, both rigs). h5py gives the
+#    frameforge scan exact per-hour coverage and frame-gap checks from the .h5 timestamps.
+echo "[1/6] Scanning VAST..."
+VIRTUAL_ENV= uv run --no-project --with h5py --with numpy scan_daily.py
 
-# 2. Generate thumbnails for last 30 days (skip existing)
-echo "[2/5] Generating thumbnails..."
+# 2. Generate thumbnails for last 30 days (skip existing; both rigs, driven by the JSON)
+echo "[2/6] Generating thumbnails..."
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless gen_thumbs.py --days 30 --incremental
 
-# 3. Generate composite for latest COMPLETE date (skip partial robocopy day)
+# 3. Generate composite for the latest COMPLETE date (today is still filling in hour by hour)
 echo "[3/6] Generating composite..."
-LATEST_DATE=$(python3 -c "import json;d=json.load(open('hcm_daily_status.json'));s=sorted(d['dates'].keys());print(s[-2] if len(s)>=2 else s[-1])")
+LATEST_DATE=$(python3 -c "import json;d=json.load(open('hcm_daily_status.json'));s=[k for k in sorted(d['dates']) if d['dates'][k]['summary'].get('status')!='in_progress'];print(s[-1])")
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless --with numpy \
     gen_composite.py --date "$LATEST_DATE" --output composite_latest.jpg
 

@@ -1,13 +1,33 @@
 # HCM Data Map
 
-Detailed documentation of the HCM recording data on VAST.
+Detailed documentation of the HCM recording data on VAST. Two rigs: the **frameforge rig** (live since 2026-10-07 14:19) and the **Bonsai rig** (archive, frozen at 2026-10-07 13:21). The switch brief with quality reports: `/home/exx/vast/leo/2026-10-07-HCM-rig-switch/NEW_DATA_BRIEF.md`.
+
+## frameforge rig (live)
+
+- **Host**: `talmolab-rigAD00` (10.3.14.126), writes straight to VAST; heartbeat `/home/exx/vast/leo/frameforge/_ff_heartbeat/talmolab-rigAD00.json` hourly
+- **Video**: `/home/exx/vast/leo/frameforge/<deployment>/cam_0N/<YYYY-MM-DD-00-00-00>/cam_0N.HH.mp4`, one folder per calendar day (PT), one file per clock hour, lands ~30 s after the hour ends
+- **Timestamps**: `cam_0N.HH.h5` next to every mp4: dataset `timestamps` (int64 ns since epoch, one per frame), attrs `fps`, `host`
+- **Cameras**: `cam_0N` is physical cage N. No swap. Never mix with the Bonsai folders.
+- **SLEAP**: `/home/exx/vast/leo/datasets/inference-frameforge-HCM/<deployment>/cam_0N/<day>/cam_0N.HH.predictions.slp`, same Leopard model, sleap-nn 0.2.0, ~22 min per hour file, one worker per camera on lee-hcm (`run_frameforge.sh`)
+
+| | |
+|---|---|
+| Video | H.264 High, yuv420p, 1280 × 1024, 50 fps (real 49.9986), keyframe every 375 frames |
+| Frames per file | 179,995 per full hour; the rig's first file (2026-10-07 14:19:50) is partial |
+| Delivery | no gaps, no dropped frames so far (max inter-frame gap ~24 ms) |
+| Size | ~84–103 MB per camera-hour |
+| Scale | 25 px/cm, unchanged |
+
+How the scanner reads a day: per hour file, frame count, first and last timestamp (hours recorded = sum of spans), max inter-frame gap and the number of gaps over 100 ms. A full hour spans ≥ 3570 s; shorter files are recording breaks (`short_file`), except the deployment's first file and today's newest hour.
+
+## Bonsai rig (archive)
 
 ## Source
 
 - **Path**: `/home/exx/vast/lee/2024-09-24-LeeAPP/`
 - **Origin**: Basler cameras → recording PC → robocopy to VAST
 - **Recording start**: 2024-09-24
-- **Status**: Ongoing (latest: 2026-05-15)
+- **Status**: Frozen. Last frame 2026-10-07 13:21 (last session folder 2026-10-07-10-11-10); replaced by frameforge the same afternoon
 - **Camera wiring**: Software IDs do not match physical labels — see [CAMERA_SWAP.md](CAMERA_SWAP.md)
 
 ## Directory Structure

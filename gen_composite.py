@@ -6,6 +6,9 @@
 
 Creates a 4-camera × 24-hour grid with thumbnails, day/night coloring,
 and camera labels. Output looks like the dashboard's visual timeline panel.
+Works for both rigs: hcm_daily_status.json (schema 2) is keyed by physical
+camera and each timeline entry names the thumbnail directory, so no camera
+swap is applied here.
 
 Usage:
     uv run gen_composite.py                     # latest date
@@ -25,12 +28,12 @@ SCRIPT_DIR = Path(__file__).parent
 JSON_FILE = SCRIPT_DIR / "hcm_daily_status.json"
 THUMB_DIR = SCRIPT_DIR / "thumbs"
 
-# Camera wiring mismatch — see CAMERA_SWAP.md
-CAM_PHYSICAL = {
-    "cam_01": "Cam 1", "cam_02": "Cam 4",
-    "cam_03": "Cam 2", "cam_04": "Cam 3",
-}
-CAM_ORDER = ["cam_01", "cam_03", "cam_04", "cam_02"]
+# Schema 2: cameras are keyed by PHYSICAL cage already (Bonsai data was re-keyed
+# through CAMERA_SWAP.md by scan_daily.py; frameforge cam_0N is cage N natively).
+CAM_ORDER = ["cam_01", "cam_02", "cam_03", "cam_04"]
+CAM_LABEL = {c: f"Cam {int(c[-2:])}" for c in CAM_ORDER}
+RIG_LABEL = {"bonsai": "Bonsai rig", "frameforge": "frameforge rig", "mixed": "rig switch day"}
+PURPLE = (255, 140, 188)         # #bc8cff inference-done marker
 
 # Layout
 CELL_W = 52
@@ -88,11 +91,13 @@ def generate_composite(date_str, data):
     canvas = np.full((total_h, total_w, 3), BG_COLOR, dtype=np.uint8)
 
     # Title
-    title = f"HCM Visual Timeline - {date_str}"
+    rig = day["summary"].get("rig") or "bonsai"
+    title = f"HCM Visual Timeline - {date_str}  ({RIG_LABEL.get(rig, rig)})"
     status = day["summary"].get("status", "unknown")
     draw_text(canvas, title, (8, 20), scale=0.48, color=TITLE_COLOR, thickness=1)
     # Status badge
-    status_colors = {"healthy": (80, 185, 63), "degraded": (34, 153, 210), "missing": (73, 81, 248)}
+    status_colors = {"healthy": (80, 185, 63), "degraded": (34, 153, 210), "missing": (73, 81, 248),
+                     "in_progress": (255, 166, 88)}
     sc = status_colors.get(status, DIM_COLOR)
     draw_text(canvas, status.upper(), (total_w - 100, 20), scale=0.35, color=sc)
 
@@ -119,21 +124,23 @@ def generate_composite(date_str, data):
     sub = "Day (lights off) 9:30-21:30 | Night (lights on) 21:30-9:30"
     draw_text(canvas, sub, (LABEL_W, subtitle_y), scale=0.25, color=DIM_COLOR)
 
-    # Camera rows
+    # Camera rows (physical order)
     for cam in CAM_ORDER:
-        label = CAM_PHYSICAL[cam]
+        label = CAM_LABEL[cam]
         c = day.get("cameras", {}).get(cam)
 
         # Camera label
         draw_text(canvas, label, (4, y_offset + CELL_H // 2 + 4), scale=0.38, color=TEXT_COLOR)
 
-        # Build hour map from timeline
+        # Build hour map from timeline; entry[4] is the thumbnail directory (disk cam)
         hour_map = {}
+        inf_hours = set((c or {}).get("inference", {}).get("hours_done", []))
         if c and c.get("timeline"):
             for t in c["timeline"]:
                 h = min(t[0], 23)
                 if h not in hour_map:
-                    hour_map[h] = {"session": t[1], "index": t[2]}
+                    hour_map[h] = {"session": t[1], "index": t[2],
+                                   "cam": t[4] if len(t) > 4 else c.get("disk_cam", cam)}
 
         for h in range(24):
             x = LABEL_W + h * (CELL_W + GAP)
@@ -141,11 +148,13 @@ def generate_composite(date_str, data):
 
             if h in hour_map:
                 entry = hour_map[h]
-                thumb = load_thumb(cam, entry["session"], entry["index"])
+                thumb = load_thumb(entry["cam"], entry["session"], entry["index"])
                 if thumb is not None:
                     canvas[y_offset:y_offset + CELL_H, x:x + CELL_W] = thumb
                     # Thin green border
                     cv2.rectangle(canvas, (x, y_offset), (x + CELL_W - 1, y_offset + CELL_H - 1), GREEN_BG, 1)
+                    if h in inf_hours:  # SLEAP done for this hour: purple underline
+                        cv2.rectangle(canvas, (x, y_offset + CELL_H - 3), (x + CELL_W - 1, y_offset + CELL_H - 1), PURPLE, -1)
                 else:
                     # Has video but no thumb
                     bg = DAY_COLOR if is_day else NIGHT_COLOR
@@ -169,8 +178,14 @@ def generate_composite(date_str, data):
     # Footer
     y_offset += 4
     summary = day["summary"]
-    footer = (f"{summary['total_videos']} videos | {summary['total_sessions']} sessions | "
-              f"{summary['cameras_present']}/4 cameras")
+    if rig in ("frameforge", "mixed"):
+        inf = summary.get("inference", {})
+        footer = (f"{summary['total_videos']} hour files | {summary.get('hours_recorded', 0)}/96 camera-hours | "
+                  f"{summary.get('frames', 0):,} frames | {summary.get('gaps', 0)} gaps | "
+                  f"SLEAP {inf.get('videos_done', 0)}/{inf.get('videos_total', 0)} (purple bar)")
+    else:
+        footer = (f"{summary['total_videos']} videos | {summary['total_sessions']} sessions | "
+                  f"{summary['cameras_present']}/4 cameras")
     draw_text(canvas, footer, (LABEL_W, y_offset + 10), scale=0.3, color=DIM_COLOR)
     draw_text(canvas, "leomeow123.github.io/hcm-dashboard", (total_w - 240, y_offset + 10),
               scale=0.28, color=DIM_COLOR)
@@ -192,7 +207,11 @@ def main():
         print("No dates in JSON")
         return
 
-    date_str = args.date or sorted_dates[-1]
+    # Default: the latest COMPLETE day. Today is still filling in hour by hour on the
+    # frameforge rig (status in_progress); on the old rig the last day was partial too.
+    complete = [d for d in sorted_dates if data["dates"][d]["summary"].get("status") != "in_progress"]
+    default_date = complete[-1] if complete else sorted_dates[-1]
+    date_str = args.date or default_date
     if date_str not in data["dates"]:
         print(f"Date {date_str} not found in data")
         return
