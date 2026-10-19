@@ -21,6 +21,10 @@ echo "=== Dashboard update started: $(date '+%Y-%m-%d %H:%M:%S') ==="
 echo "[1/6] Scanning VAST..."
 VIRTUAL_ENV= uv run --no-project --with h5py --with numpy scan_daily.py
 
+# 1b. Mouse vitals from the SLEAP output (alive / moving / counted / tail length); cached per hour file
+echo "[1b/6] Mouse vitals..."
+VIRTUAL_ENV= uv run --no-project --with h5py --with numpy mouse_vitals.py --days 3 || echo "  mouse_vitals failed (non-fatal)"
+
 # 2. Generate thumbnails for last 30 days (skip existing; both rigs, driven by the JSON)
 echo "[2/6] Generating thumbnails..."
 VIRTUAL_ENV= uv run --no-project --with opencv-python-headless gen_thumbs.py --days 30 --incremental
@@ -67,6 +71,7 @@ fi
 # 5. Commit if there are changes
 echo "[5/6] Committing..."
 git add hcm_daily_status.json composite_latest.jpg
+[ -f mouse_vitals.json ] && git add mouse_vitals.json
 if git diff --cached --quiet; then
   echo "No changes to commit."
 else

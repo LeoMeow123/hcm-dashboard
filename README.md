@@ -78,6 +78,9 @@ frameforge days: hour files / expected, hours recorded, MB, frames, frame gaps (
 ### SLEAP Inference panel
 Per camera: hour files done / recorded, backlog with the oldest waiting hour and an ETA at the worker's measured rate, worker alive or silent (from the console log's last write), the file it is processing, failures on its last scan.
 
+### Mouse vitals panel
+Are the mice alive and themselves, read off the SLEAP output (`mouse_vitals.py`). Per cage, from the newest inferred hour: movement in that hour (active minutes out of 60) and the time of the last movement; mice seen (median de-duplicated detections per frame in the dark phase) against `hcm_core.cohort.n_alive`; extended tail length (95th percentile of the TTI → TailTip polyline over every confident detection of the day) against the previous day; a 24-cell strip of active minutes per hour. Alert after 3 h without an active minute or when fewer mice are seen than are alive; warning on a 5% day-to-day tail change (observed scatter is 1-2%). The median tail length is also stored but follows posture, swinging 20% between days, so it is not the comparator.
+
 ### Visual Timeline with Thumbnails
 4-camera x 24-hour grid with:
 - **Thumbnail screenshots** extracted from each video
@@ -96,7 +99,7 @@ Everything runs automatically via cron on exx:
 | Time | Job | What |
 |------|-----|------|
 | every hour | frameforge (rig) | hour file + `.h5` land on VAST ~30 s after the hour; SLEAP workers poll every 10 min |
-| 8:00 AM | `update_dashboard.sh` | Scan both rigs + thumbnails + composite + git push |
+| 8:00 AM | `update_dashboard.sh` | Scan both rigs + mouse vitals + thumbnails + composite + git push |
 | 8:00 AM | GPU `slack_status.sh` | GPU status report to Slack (weekdays) |
 | 8:20 AM | `slack_hcm_report.sh` | HCM recording health + visual timeline to Slack |
 
@@ -105,6 +108,7 @@ The scan is cheap now (about 10 s; the frozen Bonsai totals are cached), so the 
 ### update_dashboard.sh (8:00 AM daily)
 
 1. `uv run --with h5py --with numpy scan_daily.py` (incremental: new dates + last 3 days, both rigs)
+1b. `uv run mouse_vitals.py --days 3` (per-hour results cached, ~40 s on a cold cache, seconds afterwards)
 2. Thumbnails for the last 30 days (`gen_thumbs.py --days 30 --incremental`, driven by the JSON, both rigs)
 3. Composite visual timeline for the latest **complete** day (`gen_composite.py`)
 4. 30-day sliding window of thumbnails in git
@@ -112,7 +116,7 @@ The scan is cheap now (about 10 s; the frozen Bonsai totals are cached), so the 
 
 ### slack_hcm_report.sh (8:20 AM daily)
 
-Posts to Slack via webhook: rig heartbeat and hour-file delivery, recording health for the latest complete day per camera (hour files, hours recorded, frames, gaps), today's hour count so far, SLEAP backlog and worker state, the frozen Bonsai line, the composite image, a dashboard button. `bash slack_hcm_report.sh --dry` prints it.
+Posts to Slack via webhook: rig heartbeat and hour-file delivery, recording health for the latest complete day per camera (hour files, hours recorded, frames, gaps), today's hour count so far, one line per cage from mouse vitals (alive, movement, mice seen, tail length vs yesterday), SLEAP backlog and worker state, the frozen Bonsai line, the composite image, a dashboard button. `bash slack_hcm_report.sh --dry` prints it.
 
 ## Components
 
@@ -167,6 +171,21 @@ uv run gen_composite.py --output out.jpg    # custom output path
 - Day/night coloring, physical camera labels, rig name, status badge, purple underline on hours SLEAP has finished
 - ~50-120KB JPEG output
 
+### 3b. Mouse vitals (`mouse_vitals.py`)
+
+Reads each `cam_0N.HH.predictions.slp` straight from HDF5 (about 0.5 s per hour file) and writes `mouse_vitals.json`:
+
+```bash
+uv run mouse_vitals.py            # last 3 days, prints one line per cage
+uv run mouse_vitals.py --days 7
+uv run mouse_vitals.py --rebuild  # ignore mouse_vitals_cache.json
+```
+
+- **Movement**: stable-body centroid per instance (hcm-core `stable_body` nodes), nearest-instance displacement to the previous frame; a minute is active when at least 10% of its frames show a mouse moving more than 2 px per frame (rest jitter is about 0.5 px, walking 5 px and up). Resting hours still have 10-30 active minutes, so "no active minute for 3 h" is the alarm.
+- **Mice seen**: instances gated at score 0.3 and de-duplicated within 2 cm, median per frame over dark-phase hours (counts are unreliable while mice huddle).
+- **Tail length**: TTI → Tail_0 → Tail_1 → Tail_2 → TailTip, instances with all five keypoints visible at score ≥ 0.5, pooled per day as a 2-px histogram. Only a few percent of detections qualify, almost all in the dark phase, still 100k+ samples per cage per day.
+- Facts (mice per cage, 25 px/cm, skeleton, light cycle) come from `/home/exx/vast/leo/hcm-core`; the script computes, it defines nothing.
+
 ### 4. Web Dashboard (`index.html`)
 
 Static HTML dashboard that reads `hcm_daily_status.json`:
@@ -194,6 +213,8 @@ hcm-dashboard/
 ├── DATAMAP.md                # Detailed data structure reference
 ├── CAMERA_SWAP.md            # Camera wiring mismatch documentation
 ├── scan_daily.py             # VAST scanner
+├── mouse_vitals.py           # alive / movement / mice seen / tail length from SLEAP output
+├── mouse_vitals.json         # its output (last 3 days + per-cage verdict)
 ├── gen_thumbs.py             # Thumbnail generator
 ├── gen_composite.py          # Composite visual timeline generator
 ├── update_dashboard.sh       # Daily cron: scan + thumbs + push
@@ -233,6 +254,7 @@ hcm-dashboard/
 ## Dependencies
 
 - **Scanner**: Python 3 + `h5py`/`numpy` for frame stats (via `uv run` inline deps; falls back to counts without them)
+- **Mouse vitals**: `h5py`/`numpy` via `uv run`, plus `hcm_core` from `/home/exx/vast/leo/hcm-core` (stdlib only)
 - **Thumbnails/Composite**: `opencv-python-headless`, `numpy` (via `uv run` inline deps)
 - **Dashboard**: None (static HTML, reads JSON with cache-busting)
 - **Slack**: webhook + bot token (in `.slack_config`)

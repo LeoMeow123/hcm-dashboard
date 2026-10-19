@@ -25,16 +25,26 @@ COMPOSITE_URL="https://leomeow123.github.io/hcm-dashboard/composite_latest.jpg"
 JSON_FILE="$SCRIPT_DIR/hcm_daily_status.json"
 DRY_RUN="${1:-}"
 
-PAYLOAD=$(python3 - "$JSON_FILE" "$COMPOSITE_URL" "$DRY_RUN" << 'PYEOF'
-import json, sys
+VITALS_FILE="$SCRIPT_DIR/mouse_vitals.json"
+
+PAYLOAD=$(python3 - "$JSON_FILE" "$COMPOSITE_URL" "$DRY_RUN" "$VITALS_FILE" << 'PYEOF'
+import json, sys, os
 from datetime import datetime
 
 json_file = sys.argv[1]
 composite_url = sys.argv[2]
 dry_run = len(sys.argv) > 3 and sys.argv[3] == "--dry"
+vitals_file = sys.argv[4] if len(sys.argv) > 4 else ""
 
 with open(json_file) as f:
     data = json.load(f)
+vitals = None
+if vitals_file and os.path.exists(vitals_file):
+    try:
+        with open(vitals_file) as f:
+            vitals = json.load(f)
+    except (OSError, ValueError):
+        vitals = None
 
 # Schema 2: cameras keyed by PHYSICAL cage on both rigs (scan_daily.py applies
 # CAMERA_SWAP.md to the old Bonsai data; frameforge cam_0N is cage N natively).
@@ -150,10 +160,29 @@ roi_done, roi_total = overall.get("roi_videos_done", 0), overall.get("roi_videos
 if roi_total and roi_done < roi_total:
     inf_lines.append(f":jigsaw: *ROI Backfill:* {roi_done:,}/{roi_total:,} ({roi_done / roi_total * 100:.1f}%)")
 
+# --- Mouse vitals (mouse_vitals.py: alive, moving, counted, tail length) ----
+vital_lines = []
+if vitals and vitals.get("latest"):
+    icons = {"ok": ":white_check_mark:", "warn": ":warning:", "alert": ":rotating_light:"}
+    vital_lines.append(":mouse: *Mice (from SLEAP, newest inferred hour):*")
+    for cam in CAMS:
+        v = vitals["latest"].get(cam) or {}
+        if not v.get("date"):
+            vital_lines.append(f"   :x: {label(cam)}: {v.get('note', 'no data')}")
+            continue
+        t, p = v.get("tail_today"), v.get("tail_prev")
+        tail = (f"tail {t['extended_cm']:.2f} cm" + (f" ({v['tail_change_pct']:+.1f}% vs {v['tail_prev_date'][5:]})" if p else "")) if t else "tail n/a"
+        mv = f"moving {v['active_min_last_hour']}/60 min at {v['hour']:02d}:00" if v.get("moving_last_hour") else f"last movement {v['last_movement'][5:] if v.get('last_movement') else 'none'}"
+        vital_lines.append(f"   {icons.get(v['status'], '')} {label(cam)}: {'alive' if v['alive'] else 'CHECK'}, {mv}, "
+                           f"{v['mice_seen']}/{v['mice_expected']} mice seen, {tail}"
+                           + (f" - {v['note']}" if v.get("note") else ""))
+
 text_lines = [f":house: *HCM Recording Health - {report_date}*", ""] + rig_lines + [
     "", f"{status_emoji.get(day_status, '')} *Recording ({report_date}, {rig} rig):*"] + cam_lines + [total_line]
 if today_lines:
     text_lines += [""] + today_lines
+if vital_lines:
+    text_lines += [""] + vital_lines
 text_lines += [""] + inf_lines
 text = "\n".join(text_lines)
 

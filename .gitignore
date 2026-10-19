@@ -4,3 +4,4 @@ __pycache__/
 thumbs/
 .slack_config
 composite_2*.jpg
+mouse_vitals_cache.json
