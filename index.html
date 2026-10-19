@@ -955,7 +955,13 @@ canvas {
 .vitals-strip span { height: 10px; border-radius: 1px; background: var(--border); }
 .vitals-strip span.dark { outline: 1px solid #3a3020; outline-offset: -1px; }
 .vitals-strip span.future { background: transparent; border: 1px dashed var(--border); }
-.vitals-note { font-size: 11px; color: var(--text-dim); margin-top: 10px; }
+.vitals-rows { display: grid; grid-template-columns: 72px 1fr; gap: 6px 10px; font-size: 12px; margin-top: 8px; line-height: 1.45; }
+.vitals-rows .k { color: var(--text-dim); }
+.vitals-rows .v b { color: var(--text); font-weight: 600; }
+.vitals-card .dim { color: var(--text-dim); font-size: 11px; }
+.vitals-note { font-size: 11px; color: var(--text-dim); margin-top: 14px; }
+.vitals-note summary { cursor: pointer; color: var(--blue); }
+.vitals-note p { margin: 6px 0 0; }
 .status-badge.ok { background: var(--green-bg); color: var(--green); }
 .status-badge.warn { background: var(--yellow-bg); color: var(--yellow); }
 .status-badge.alert { background: var(--red-bg); color: var(--red); }
@@ -1165,53 +1171,59 @@ function renderVitals() {
   const panel = document.getElementById('vitals-panel');
   if (!VITALS || !VITALS.latest) { panel.innerHTML = ''; return; }
   const gen = new Date(VITALS.generated_at);
-  const worst = Object.values(VITALS.latest).map(v => v.status).includes('alert') ? 'alert'
-    : Object.values(VITALS.latest).map(v => v.status).includes('warn') ? 'warn' : 'ok';
+  const statuses = Object.values(VITALS.latest).map(v => v.status);
+  const worst = statuses.includes('alert') ? 'alert' : statuses.includes('warn') ? 'warn' : 'ok';
   const label = { ok: 'ALL MICE ACTIVE', warn: 'CHECK', alert: 'ALERT' }[worst];
-  let html = `<h2>Mouse vitals <span class="status-badge ${worst}">${label}</span>
-    <span style="font-size:12px;color:var(--text-dim);font-weight:400">from SLEAP output · computed ${gen.toLocaleDateString()} ${gen.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span></h2>`;
+  const th = VITALS.thresholds || {};
+  const warnPct = th.tail_change_warn_pct || 5;
+  let html = `<h2>Mouse vitals <span class="status-badge ${worst}">${label}</span></h2>
+    <div class="subtitle" style="margin-bottom:14px">From the SLEAP output, newest inferred hour · computed ${gen.toLocaleDateString()} ${gen.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>`;
   html += '<div class="vitals-grid">';
   for (const cam of CAM_ORDER) {
     const v = VITALS.latest[cam];
     if (!v) continue;
     if (!v.date) {
-      html += `<div class="vitals-card"><h3>${camLabel(cam)} <span class="status-badge alert">no data</span></h3><div class="row">${v.note || ''}</div></div>`;
+      html += `<div class="vitals-card"><h3>${camLabel(cam)} <span class="status-badge alert">no data</span></h3><div class="dim">${v.note || ''}</div></div>`;
       continue;
     }
-    const dayRec = (VITALS.days[v.date] || {})[cam] || {};
-    const hours = dayRec.hours || {};
-    const maxAct = 60;
+    const hours = ((VITALS.days[v.date] || {})[cam] || {}).hours || {};
     let strip = '<div class="vitals-strip">';
     for (let h = 0; h < 24; h++) {
-      const hv = hours[String(h).padStart(2, '0')];
+      const hv = hours[pad2(h)];
       const dark = h + 0.5 >= 9.5 && h + 0.5 < 21.5;
       if (!hv) { strip += `<span class="future${dark ? ' dark' : ''}" title="${pad2(h)}:00 not inferred yet"></span>`; continue; }
-      const a = hv.active_min / maxAct;
-      const col = hv.active_min === 0 ? 'var(--red-bg)' : `rgba(63,185,80,${(0.25 + 0.75 * a).toFixed(2)})`;
-      strip += `<span class="${dark ? 'dark' : ''}" style="background:${col}" title="${pad2(h)}:00 — ${hv.active_min} active min, ${hv.mice ?? '?'} mice/frame${hv.tail_n ? ', ' + hv.tail_n.toLocaleString() + ' tail samples' : ''}"></span>`;
+      const col = hv.active_min === 0 ? 'var(--red-bg)' : `rgba(63,185,80,${(0.25 + 0.75 * hv.active_min / 60).toFixed(2)})`;
+      strip += `<span class="${dark ? 'dark' : ''}" style="background:${col}" title="${pad2(h)}:00 — ${hv.active_min} active min, ${hv.mice ?? '?'} mice per frame"></span>`;
     }
     strip += '</div>';
     const t = v.tail_today, p = v.tail_prev;
-    const warnPct = (VITALS.thresholds || {}).tail_change_warn_pct || 5;
-    const tailLine = t
-      ? `tail <b>${t.extended_cm.toFixed(2)} cm</b> extended (95th pct of ${t.n.toLocaleString()} detections, median ${t.median_cm.toFixed(2)} cm${p ? `; ${v.tail_prev_date.slice(5)}: ${p.extended_cm.toFixed(2)} cm, <b style="color:${Math.abs(v.tail_change_pct) >= warnPct ? 'var(--yellow)' : 'var(--text)'}">${v.tail_change_pct >= 0 ? '+' : ''}${v.tail_change_pct}%</b>` : ''})`
-      : 'tail: no measurement yet';
     const miceCol = v.mice_seen != null && v.mice_expected != null && v.mice_seen < v.mice_expected - 0.5 ? 'var(--red)' : 'var(--green)';
+    const chg = v.tail_change_pct;
+    const chgCol = chg != null && Math.abs(chg) >= warnPct ? 'var(--yellow)' : 'var(--text-dim)';
+    const prevLabel = p ? (v.tail_prev_date === sortedDates[sortedDates.length - 2] ? 'yesterday' : v.tail_prev_date.slice(5)) : '';
     html += `
       <div class="vitals-card">
-        <h3>${camLabel(cam)} <span class="status-badge ${v.status}">${v.status === 'ok' ? 'alive' : v.status}</span>
-          <span style="font-size:11px;color:var(--text-dim);font-weight:400">newest hour ${v.date.slice(5)} ${pad2(v.hour)}:00</span></h3>
-        <div class="row">movement in the newest hour: <b>${v.moving_last_hour ? `yes, ${v.active_min_last_hour} of 60 min` : 'none'}</b> · last movement <b>${v.last_movement ? v.last_movement.slice(5) : '—'}</b>${v.hours_since_movement != null && v.hours_since_movement > 0 ? ` (${v.hours_since_movement} h ago)` : ''}</div>
-        <div class="row">mice seen: <b style="color:${miceCol}">${v.mice_seen ?? '?'} of ${v.mice_expected ?? '?'}</b> (median per frame, dark phase)</div>
-        <div class="row">${tailLine}</div>
+        <h3>${camLabel(cam)} <span class="status-badge ${v.status}">${v.status === 'ok' ? 'alive' : v.status}</span></h3>
+        <div class="vitals-rows">
+          <div class="k">Movement</div>
+          <div class="v"><b>${v.moving_last_hour ? `${v.active_min_last_hour} of 60 min` : 'none'}</b> in the newest hour (${pad2(v.hour)}:00)<br>
+            <span class="dim">last movement ${v.last_movement ? v.last_movement.slice(11) : 'none in window'}${v.hours_since_movement > 0 ? `, ${v.hours_since_movement} h ago` : ''}</span></div>
+          <div class="k">Mice</div>
+          <div class="v"><b style="color:${miceCol}">${v.mice_seen ?? '?'} of ${v.mice_expected ?? '?'}</b> seen</div>
+          <div class="k">Tail</div>
+          <div class="v">${t ? `<b>${t.extended_cm.toFixed(2)} cm</b>${p ? ` <span style="color:${chgCol}">${chg >= 0 ? '+' : ''}${chg}% vs ${prevLabel}</span>` : ''}<br><span class="dim">${t.n.toLocaleString()} detections today</span>` : '<span class="dim">no measurement yet</span>'}</div>
+        </div>
         ${strip}
-        <div class="row" style="font-size:10px">active minutes per hour on ${v.date.slice(5)} · outlined = dark phase · red = none</div>
-        ${v.note ? `<div class="row" style="color:var(--yellow)">${v.note}</div>` : ''}
+        <div class="dim" style="font-size:10px">active minutes per hour today · outlined = dark phase · red = none</div>
+        ${v.note ? `<div style="font-size:12px;color:var(--yellow);margin-top:6px">${v.note}</div>` : ''}
       </div>`;
   }
   html += '</div>';
-  const th = VITALS.thresholds || {};
-  html += `<div class="vitals-note">An active minute has a mouse moving more than ${th.move_px_per_frame} px per frame in at least ${Math.round((th.active_minute_frac || 0) * 100)}% of its frames. Alert after ${th.stale_hours} h without one, or when fewer mice are seen than hcm-core says are alive. Tail length is the TTI → TailTip polyline over every confident detection of the day, never a single frame; the headline is the extended length (95th percentile) because the median follows posture; ${th.tail_change_warn_pct}% day-to-day change is flagged.</div>`;
+  html += `<details class="vitals-note"><summary>How this is measured</summary>
+    <p>Movement: a minute is active when a mouse moves more than ${th.move_px_per_frame} px per frame in at least ${Math.round((th.active_minute_frac || 0) * 100)}% of its frames (rest jitter is about 0.5 px, walking 5 px and up). Resting hours still have 10 to 30 active minutes; the alert is ${th.stale_hours} h without one.</p>
+    <p>Mice: median number of de-duplicated detections per frame in the dark phase, against the number hcm-core records as alive.</p>
+    <p>Tail: TTI → TailTip polyline over every confident detection of the day, never a single frame. The number shown is the extended length (95th percentile); the median follows posture and swings 20% between days. A ${warnPct}% day-to-day change is flagged.</p>
+  </details>`;
   panel.innerHTML = html;
 }
 

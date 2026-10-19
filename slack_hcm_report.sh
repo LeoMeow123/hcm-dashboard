@@ -164,30 +164,36 @@ if roi_total and roi_done < roi_total:
 vital_lines = []
 if vitals and vitals.get("latest"):
     icons = {"ok": ":white_check_mark:", "warn": ":warning:", "alert": ":rotating_light:"}
-    vital_lines.append(":mouse: *Mice (from SLEAP, newest inferred hour):*")
+    newest = max((v.get("hour", 0) for v in vitals["latest"].values() if v.get("date")), default=None)
+    vital_lines.append(f":mouse: *Mice* - from SLEAP, newest hour {newest:02d}:00" if newest is not None else ":mouse: *Mice*")
     for cam in CAMS:
         v = vitals["latest"].get(cam) or {}
         if not v.get("date"):
-            vital_lines.append(f"   :x: {label(cam)}: {v.get('note', 'no data')}")
+            vital_lines.append(f"{icons['alert']} {label(cam)} - {v.get('note', 'no data')}")
             continue
         t, p = v.get("tail_today"), v.get("tail_prev")
-        tail = (f"tail {t['extended_cm']:.2f} cm" + (f" ({v['tail_change_pct']:+.1f}% vs {v['tail_prev_date'][5:]})" if p else "")) if t else "tail n/a"
-        mv = f"moving {v['active_min_last_hour']}/60 min at {v['hour']:02d}:00" if v.get("moving_last_hour") else f"last movement {v['last_movement'][5:] if v.get('last_movement') else 'none'}"
-        vital_lines.append(f"   {icons.get(v['status'], '')} {label(cam)}: {'alive' if v['alive'] else 'CHECK'}, {mv}, "
-                           f"{v['mice_seen']}/{v['mice_expected']} mice seen, {tail}"
-                           + (f" - {v['note']}" if v.get("note") else ""))
+        prev_lbl = "yesterday" if p and v.get("tail_prev_date") == complete[-1] else (v.get("tail_prev_date", "")[5:] if p else "")
+        tail = (f"tail {t['extended_cm']:.1f} cm" + (f" ({v['tail_change_pct']:+.1f}% vs {prev_lbl})" if p else "")) if t else "tail n/a"
+        mv = f"moved {v['active_min_last_hour']} of 60 min" if v.get("moving_last_hour") else f"no movement since {v['last_movement'][5:] if v.get('last_movement') else '?'}"
+        mice = f"{v['mice_seen']:g} of {v['mice_expected']} seen" if v.get("mice_seen") is not None else "count n/a"
+        vital_lines.append(f"{icons.get(v['status'], '')} {label(cam)} · {'alive' if v['alive'] else 'CHECK'} · {mv} · {mice} · {tail}"
+                           + (f"\n      _{v['note']}_" if v.get("note") else ""))
 
-text_lines = [f":house: *HCM Recording Health - {report_date}*", ""] + rig_lines + [
+health_lines = [f":house: *HCM Recording Health - {report_date}*", ""] + rig_lines + [
     "", f"{status_emoji.get(day_status, '')} *Recording ({report_date}, {rig} rig):*"] + cam_lines + [total_line]
 if today_lines:
-    text_lines += [""] + today_lines
-if vital_lines:
-    text_lines += [""] + vital_lines
-text_lines += [""] + inf_lines
-text = "\n".join(text_lines)
+    health_lines += [""] + today_lines
+health_text = "\n".join(health_lines)
+mice_text = "\n".join(vital_lines)
+inf_text = "\n".join(inf_lines)
+text = "\n\n".join(x for x in (health_text, mice_text, inf_text) if x)
 
-blocks = [
-    {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+# One Slack block per paragraph: recording health, the mice, SLEAP.
+blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": health_text}}]
+if mice_text:
+    blocks += [{"type": "divider"}, {"type": "section", "text": {"type": "mrkdwn", "text": mice_text}}]
+blocks += [{"type": "divider"}, {"type": "section", "text": {"type": "mrkdwn", "text": inf_text}}]
+blocks += [
     {
         "type": "image",
         "image_url": composite_url + f"?t={int(datetime.now().timestamp())}",
